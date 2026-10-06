@@ -2,10 +2,13 @@ package socks5
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -271,5 +274,84 @@ func TestSocks5UDPEcho(t *testing.T) {
 	// Response: header(10) + payload.
 	if n < 14 || string(buf[n-4:n]) != "ping" {
 		t.Fatalf("udp relay mismatch: %q", buf[:n])
+	}
+}
+
+// startFakeDoH serves DNS-JSON answers mapping every name to 127.0.0.1.
+func startFakeDoH(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := map[string]any{"Status": 0}
+		if r.URL.Query().Get("type") == "1" {
+			resp["Answer"] = []map[string]any{{
+				"name": r.URL.Query().Get("name"), "type": 1, "data": "127.0.0.1",
+			}}
+		}
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// TestSocks5UDPDomainTarget verifies that a domain target in a UDP ASSOCIATE
+// datagram resolves through the lane's DNS mode (here: DoH), not the system
+// resolver.
+func TestSocks5UDPDomainTarget(t *testing.T) {
+	uln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer uln.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, from, err := uln.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			uln.WriteToUDP(buf[:n], from)
+		}
+	}()
+
+	dohURL := startFakeDoH(t)
+	addr := startSocks5(t, &config.LaneConfig{
+		Name:    "lo",
+		Listen:  "127.0.0.1:0",
+		BindIP:  "127.0.0.1",
+		DNS:     config.DNSDoH,
+		DohURLs: []string{dohURL},
+	}, nil)
+
+	c := dialSocks5(t, addr, "", "")
+	c.mustWrite([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	rep := c.mustRead(10)
+	if rep[1] != 0x00 {
+		t.Fatalf("UDP ASSOCIATE failed: %#x", rep[1])
+	}
+	bndPort := binary.BigEndian.Uint16(rep[8:10])
+	bndAddr := net.JoinHostPort("127.0.0.1", fmt.Sprint(bndPort))
+	relayConn, err := net.Dial("udp", bndAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relayConn.Close()
+	relayConn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Domain-target datagram: ATYP=3, len=12, "test.example".
+	var pb [2]byte
+	binary.BigEndian.PutUint16(pb[:], uint16(uln.LocalAddr().(*net.UDPAddr).Port))
+	hdr := []byte{0, 0, 0, 0x03, 12}
+	hdr = append(hdr, []byte("test.example")...)
+	hdr = append(hdr, pb[0], pb[1])
+	if _, err := relayConn.Write(append(hdr, []byte("pong")...)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1024)
+	n, err := relayConn.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n < 14 || string(buf[n-4:n]) != "pong" {
+		t.Fatalf("udp domain relay mismatch: %q", buf[:n])
 	}
 }

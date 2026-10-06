@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0 — 2026-10-07
+
+- **DNS-over-HTTPS lanes**: `dns: doh` resolves domains via the DNS-JSON API
+  (default endpoints: AliDNS `223.5.5.5`, Cloudflare `1.1.1.1`, both
+  IP-literal so no bootstrap resolution is needed) with the HTTPS query
+  itself dialed through the lane. Custom endpoints via `doh: [...]`.
+- **UDP ASSOCIATE domain targets now resolve through the lane's DNS mode**
+  (lane / doh / system) instead of always using the system resolver — no more
+  DNS leak through the UDP relay path.
+- **Release binaries**: goreleaser-based GitHub Releases (linux/darwin/windows,
+  amd64+arm64, checksums) on `v*` tags.
+- Verified live: device-pinned lanes resolving through AliDNS DoH and
+  egressing their own NIC.
+
 ## 0.2.0 — 2026-10-07
 
 - **`niclane bench` / `niclane bench serve`**: per-lane throughput measurement

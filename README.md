@@ -47,6 +47,8 @@ Each lane:
    the pinned interface, so DNS cannot leak out of another NIC. Loopback
    nameservers (systemd-resolved) are substituted with `dns_servers` /
    a public resolver, since loopback is unreachable from a device-bound socket.
+   Alternatively `dns: doh` resolves via DNS-over-HTTPS (default endpoints:
+   AliDNS, Cloudflare) with the HTTPS query itself going through the lane.
 4. **Optionally chains an upstream proxy** (`socks5://` or `http://`) — the
    upstream itself is dialed *through the lane*. This is how you chain to a
    SocksBypass phone over the hotspot NIC.
@@ -63,7 +65,8 @@ lane-bound UDP socket.
   (CONNECT + absolute-URI forwarding) per lane
 - Device-level egress pinning: Linux `SO_BINDTODEVICE`, macOS `IP_BOUND_IF`
 - Fail-closed health monitoring, per-lane, 2 s granularity
-- Per-lane DNS with anti-leak defaults; configurable `dns_servers`
+- Per-lane DNS with anti-leak defaults: lane resolver, DNS-over-HTTPS
+  (`dns: doh`), or system; configurable `dns_servers` / `doh`
 - Upstream chaining (socks5/http), dialed through the lane
 - `niclane doctor` — interfaces, capability probe, suggested config
 - `niclane test` — verify each lane's real exit IP
@@ -158,8 +161,9 @@ fastest lane by downstream: dock (3057.1 MB/s)
 | `strict` | `true` | fail-closed: reject while the interface is down/unaddressed |
 | `auth` | — | SOCKS5 `user`/`password` for inbound clients |
 | `upstream` | — | chain through `socks5://[user:pass@]host:port` or `http://…` (dialed via the lane) |
-| `dns` | `lane` | `lane` (resolve through the NIC) or `system` |
+| `dns` | `lane` | `lane` (resolve through the NIC), `doh` (DNS-over-HTTPS via the lane), or `system` |
 | `dns_servers` | `223.5.5.5` | substitutes for loopback NS in lane-DNS mode |
+| `doh` | AliDNS + Cloudflare | DoH JSON-API base URLs for `dns: doh`; IP-literal `https://` URLs recommended (no bootstrap needed) |
 | `idle_timeout` | none | close tunnels idle longer than this (`5m`, `300s`, …) |
 | `admin` | — | global: `host:port` for `/metrics` and `/status` |
 | `log_level` | `info` | `debug`, `info`, `warn`, `error` |
@@ -173,7 +177,10 @@ Verified by the test suite and/or on real hardware:
   macOS unprivileged).
 - ✅ Fail-closed: missing/down/unaddressed interface ⇒ immediate reject, never
   a silent fallback.
-- ✅ Per-lane DNS: queries egress through the lane; loopback NS substituted.
+- ✅ Per-lane DNS: queries egress through the lane; loopback NS substituted;
+  `dns: doh` verified live against AliDNS.
+- ✅ UDP target resolution through the lane's DNS mode (SOCKS5 UDP
+  ASSOCIATE with domain targets).
 - ✅ Upstream chaining dialed through the lane.
 - ✅ Loopback end-to-end: SOCKS5 CONNECT/UDP, HTTP CONNECT/forward, auth,
   reject paths, byte counters (CI: ubuntu/macos/windows, `-race`).
@@ -186,8 +193,9 @@ Honest limitations:
   you which mode you got, and the lane exposes `bind_mode` in `/status`.
 - ⚠️ **Windows pinning uses `IP_UNICAST_IF`** (unprivileged): it constrains
   the *transmit* path only, so treat it as best-effort.
-- ⚠️ **UDP target resolution uses the system resolver** (the payload itself
-  still egresses through the lane).
+- ⚠️ **UDP target resolution uses the lane's DNS mode; UDP target *IP
+  literals* need no resolution.** Prior to v0.3.0 domains were resolved with
+  the system resolver.
 - ⚠️ **`dns: system`** lets DNS follow the host default route — a potential
   DNS leak relative to the lane. Default is `dns: lane` for bound lanes.
 - ⚠️ **Byte counters** cover SOCKS5 relays and HTTP CONNECT tunnels; plain
@@ -267,8 +275,8 @@ WantedBy=multi-user.target
 
 ## Roadmap
 
-- [ ] Per-lane DoH for `dns: lane`
-- [ ] UDP target resolution through the lane resolver
+- [ ] TTL-aware DNS answer caching
+- [ ] SOCKS5 BIND command (rarely used)
 
 ## Development
 

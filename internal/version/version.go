@@ -1,4 +1,5 @@
 package version
 
-// Version is the semantic version of niclane.
-const Version = "0.2.0"
+// Version is the semantic version of niclane. Release builds override it via
+// -ldflags "-X github.com/CallMeHFK/niclane/internal/version.Version=...".
+var Version = "0.3.0"

@@ -19,6 +19,7 @@ const (
 
 	DNSLane   = "lane" // resolve through the lane's own interface
 	DNSSystem = "system"
+	DNSDoH    = "doh" // DNS-over-HTTPS through the lane
 )
 
 // Config is the top-level configuration file.
@@ -42,6 +43,7 @@ type LaneConfig struct {
 	Upstream    string      `yaml:"upstream"`
 	DNS         string      `yaml:"dns"`
 	DNSServers  []string    `yaml:"dns_servers"`
+	DohURLs     []string    `yaml:"doh"`
 	IdleTimeout string      `yaml:"idle_timeout"`
 }
 
@@ -65,7 +67,7 @@ func (c *LaneConfig) TypeOrDefault() string {
 }
 
 // DNSMode returns the DNS mode: resolution goes through the lane interface
-// whenever one is configured, unless explicitly set to "system".
+// whenever one is configured, unless explicitly set to "system" or "doh".
 func (c *LaneConfig) DNSMode() string {
 	if c.DNS == "" {
 		if c.Interface != "" || c.BindIP != "" {
@@ -74,6 +76,23 @@ func (c *LaneConfig) DNSMode() string {
 		return DNSSystem
 	}
 	return c.DNS
+}
+
+// DefaultDoHURLs are the JSON-API DoH endpoints used when dns: doh is set
+// without an explicit doh list. Both are IP-literal URLs, so the DoH query
+// needs no bootstrap resolution. `http://` endpoints work for tests and
+// self-hosted resolvers but should not be used in production.
+var DefaultDoHURLs = []string{
+	"https://223.5.5.5/resolve",
+	"https://1.1.1.1/dns-query",
+}
+
+// EffectiveDoHURLs returns the configured DoH endpoints or the defaults.
+func (c *LaneConfig) EffectiveDoHURLs() []string {
+	if len(c.DohURLs) > 0 {
+		return c.DohURLs
+	}
+	return DefaultDoHURLs
 }
 
 // IdleTimeoutDur parses idle_timeout; 0 means no idle timeout.
@@ -150,9 +169,14 @@ func (c *Config) Validate() error {
 		}
 
 		switch ln.DNS {
-		case "", DNSLane, DNSSystem:
+		case "", DNSLane, DNSSystem, DNSDoH:
 		default:
-			return fmt.Errorf("lane %q: unknown dns %q (want lane or system)", ln.Name, ln.DNS)
+			return fmt.Errorf("lane %q: unknown dns %q (want lane, system or doh)", ln.Name, ln.DNS)
+		}
+		for _, u := range ln.DohURLs {
+			if sch := schemeOf(u); sch != "https" && sch != "http" {
+				return fmt.Errorf("lane %q: doh URL %q must be an http(s) URL", ln.Name, u)
+			}
 		}
 
 		if ln.Auth != nil && ln.TypeOrDefault() == TypeHTTP {

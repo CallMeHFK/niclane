@@ -41,7 +41,9 @@ VPN/TUN 虚拟网卡、Tailscale、Docker 网桥……全部共存于一张路�
    拒绝。不回退、不泄漏。
 3. **DNS 从本车道解析**。域名查询通过被绑定的网卡发出，DNS 无法从其他网卡
    泄漏。回环域名服务器（systemd-resolved）会被 `dns_servers` / 公共解析器
-   替换——设备绑定 socket 无法到达回环地址。
+   替换——设备绑定 socket 无法到达回环地址。也可用 `dns: doh` 走
+   DNS-over-HTTPS（默认端点：阿里 DNS、Cloudflare），且 HTTPS 查询本身
+   也从车道出站。
 4. **可选上游链**（`socks5://` 或 `http://`），且上游本身从车道内拨出。
    这正是"经热点网卡串联手机上的 SocksBypass"的用法。
 5. **全量计数**：连接数、拒绝数、双向字节数、DNS 查询、UDP 报文——通过
@@ -55,7 +57,8 @@ VPN/TUN 虚拟网卡、Tailscale、Docker 网桥……全部共存于一张路�
   （CONNECT + 绝对 URI 转发）
 - 设备级出口绑定：Linux `SO_BINDTODEVICE`、macOS `IP_BOUND_IF`
 - Fail-closed 健康监控，逐车道独立，2 秒粒度
-- 每车道独立 DNS，默认防泄漏；`dns_servers` 可配置
+- 每车道独立 DNS，默认防泄漏：车道解析器 / DNS-over-HTTPS（`dns: doh`）/
+  系统解析；`dns_servers` / `doh` 可配置
 - 上游链（socks5/http），从车道内拨出
 - `niclane doctor` —— 网卡清单、能力探测、配置建议
 - `niclane test` —— 验证每条车道的真实出口 IP
@@ -148,8 +151,9 @@ fastest lane by downstream: dock (3057.1 MB/s)
 | `strict` | `true` | fail-closed：网卡掉线/无地址时拒绝连接 |
 | `auth` | — | SOCKS5 入站 `user`/`password` |
 | `upstream` | — | 经 `socks5://[user:pass@]host:port` 或 `http://…` 链式上游（从车道内拨出） |
-| `dns` | `lane` | `lane`（经本车道解析）或 `system` |
+| `dns` | `lane` | `lane`（经本车道解析）、`doh`（DNS-over-HTTPS 经车道）或 `system` |
 | `dns_servers` | `223.5.5.5` | lane-DNS 模式下替换回环 NS 的解析器 |
+| `doh` | 阿里 DNS + Cloudflare | `dns: doh` 的 DoH JSON-API 基础 URL；建议用 IP 字面量 `https://`（无需引导解析） |
 | `idle_timeout` | 无 | 空闲超时（`5m`、`300s`…） |
 | `admin` | — | 全局：`/metrics` 与 `/status` 的 `host:port` |
 | `log_level` | `info` | `debug` / `info` / `warn` / `error` |
@@ -161,7 +165,9 @@ fastest lane by downstream: dock (3057.1 MB/s)
 - ✅ 设备绑定出口：TCP 与 UDP 流量只从被绑定的网卡出站，即使存在其他默认
   路由（Linux ≥ 5.7 非特权可用，macOS 非特权可用）。
 - ✅ Fail-closed：网卡缺失/掉线/无地址 ⇒ 立即拒绝，绝不静默回退。
-- ✅ 每车道 DNS：查询从车道出站；回环 NS 自动替换。
+- ✅ 每车道 DNS：查询从车道出站；回环 NS 自动替换；`dns: doh` 已对阿里
+  DoH 实连验证。
+- ✅ UDP 目标解析走车道 DNS 模式（SOCKS5 UDP ASSOCIATE 域名目标）。
 - ✅ 上游链从车道内拨出。
 - ✅ 回环端到端：SOCKS5 CONNECT/UDP、HTTP CONNECT/转发、认证、拒绝路径、
   字节计数（CI：ubuntu/macos/windows，`-race`）。
@@ -173,7 +179,8 @@ fastest lane by downstream: dock (3057.1 MB/s)
   告诉你实际处于哪种模式，`/status` 里有每车道的 `bind_mode`。
 - ⚠️ **Windows 用 `IP_UNICAST_IF` 绑定**（无需特权）：仅约束发送路径，
   按尽力而为对待。
-- ⚠️ **UDP 目标解析用系统解析器**（载荷本身仍从车道出站）。
+- ⚠️ **UDP 目标解析走车道 DNS 模式**；UDP 目标为 IP 字面量时无需解析。
+  v0.3.0 之前域名走系统解析器。
 - ⚠️ **`dns: system`** 时 DNS 走宿主默认路由——相对车道是潜在 DNS 泄漏。
   绑定车道默认 `dns: lane`。
 - ⚠️ **字节计数**覆盖 SOCKS5 中继与 HTTP CONNECT 隧道；普通 HTTP 转发仅计
@@ -248,8 +255,8 @@ WantedBy=multi-user.target
 
 ## 路线图
 
-- [ ] `dns: lane` 的 DoH 支持
-- [ ] UDP 目标解析走车道内解析器
+- [ ] 带 TTL 的 DNS 应答缓存
+- [ ] SOCKS5 BIND 命令（很少使用）
 
 ## 参与开发
 

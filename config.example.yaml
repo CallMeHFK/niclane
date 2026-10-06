@@ -21,6 +21,8 @@ lanes:
     #   user: han
     #   password: change-me
     dns_servers: [223.5.5.5, 1.1.1.1]   # replaces loopback NS (systemd-resolved)
+    # dns: doh                          # DNS-over-HTTPS through the lane instead
+    # doh: ["https://223.5.5.5/resolve", "https://1.1.1.1/dns-query"]
     # idle_timeout: 5m
 
   # --- USB dock NIC, HTTP proxy variant -------------------------------------

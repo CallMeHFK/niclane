@@ -1,8 +1,6 @@
-/niclane
-niclane
+/dist/
 niclane.exe
 *.test
 *.out
-dist/
 coverage.*
 .DS_Store

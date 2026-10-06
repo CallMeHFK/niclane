@@ -1,0 +1,47 @@
+# niclane configuration — one NIC, one lane.
+#
+# Each lane runs a local proxy listener whose egress is pinned to one network
+# interface. Full reference: README.md / README.zh-CN.md.
+
+# Admin endpoint: Prometheus metrics at /metrics, JSON status at /status.
+admin: 127.0.0.1:9000
+
+# debug | info | warn | error
+log_level: info
+
+lanes:
+  # --- WiFi NIC -------------------------------------------------------------
+  - name: wifi
+    listen: 127.0.0.1:7891
+    type: socks5               # socks5 | http
+    interface: wlp130s0        # egress pinned to this NIC
+    # bind_mode: auto          # device | ip | auto (default auto)
+    # strict: true             # default: reject while the NIC is down/unaddressed
+    # auth:                    # optional inbound SOCKS5 auth
+    #   user: han
+    #   password: change-me
+    dns_servers: [223.5.5.5, 1.1.1.1]   # replaces loopback NS (systemd-resolved)
+    # idle_timeout: 5m
+
+  # --- USB dock NIC, HTTP proxy variant -------------------------------------
+  - name: dock
+    listen: 127.0.0.1:7892
+    type: http
+    interface: enxeaa1c366f80d
+
+  # --- Ride the TUN-mode proxy deliberately ---------------------------------
+  - name: tunnel
+    listen: 127.0.0.1:7893
+    type: socks5
+    interface: Mihomo          # the TUN device is just another "NIC"
+
+  # --- Chain to SocksBypass on the phone over the hotspot NIC ---------------
+  # - name: cell
+  #   listen: 127.0.0.1:7894
+  #   interface: wlan1
+  #   upstream: socks5://192.168.43.1:9876   # dialed through wlan1
+
+  # --- Source-IP-only binding (weak isolation, no privileges needed) --------
+  # - name: by-ip
+  #   listen: 127.0.0.1:7895
+  #   bind_ip: 192.168.1.100

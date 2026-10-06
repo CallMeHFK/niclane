@@ -30,7 +30,7 @@ rejected immediately, never silently rerouted through another NIC.
 ## How it works
 
 ```
-app A ──> 127.0.0.1:7891 (socks5, lane "wifi")  ──[SO_BINDTODEVICE wlp130s0]──>  WiFi NIC  ──> uplink A
+app A ──> 127.0.0.1:7891 (socks5, lane "wifi")  ──[SO_BINDTODEVICE wlan0]──>  WiFi NIC  ──> uplink A
 app B ──> 127.0.0.1:7892 (http,  lane "dock")   ──[SO_BINDTODEVICE enx...]───>  USB NIC   ──> uplink B
 app C ──> 127.0.0.1:7893 (socks5, lane "tun")   ──[SO_BINDTODEVICE Mihomo]───>  TUN       ──> proxy exit
 ```
@@ -88,7 +88,7 @@ lanes:
   - name: wifi
     listen: 127.0.0.1:7891
     type: socks5
-    interface: wlp130s0        # egress pinned to this NIC
+    interface: wlan0        # egress pinned to this NIC
   - name: dock
     listen: 127.0.0.1:7892
     type: http
@@ -139,8 +139,8 @@ per-NIC isolation working as designed:
 
 ```
 LANE             TARGET                      UP MB/s   DOWN MB/s  RESULT
-dock             192.168.10.185:18999         3059.7      3057.1  ok (4.0s)
-wifi             192.168.10.185:18999              -           -  FAIL: dial through lane: i/o timeout
+dock             198.51.100.23:18999         3059.7      3057.1  ok (4.0s)
+wifi             198.51.100.23:18999              -           -  FAIL: dial through lane: i/o timeout
 
 fastest lane by downstream: dock (3057.1 MB/s)
 ```
@@ -202,7 +202,7 @@ Honest limitations:
 
 ```yaml
 lanes:
-  - { name: wifi, listen: 127.0.0.1:7891, interface: wlp130s0 }
+  - { name: wifi, listen: 127.0.0.1:7891, interface: wlan0 }
   - { name: dock, listen: 127.0.0.1:7892, interface: enxeaa1c366f80d }
 ```
 
@@ -221,7 +221,7 @@ lanes:
   - name: cell
     listen: 127.0.0.1:7894
     interface: wlan1                     # only the hotspot NIC is used
-    upstream: socks5://192.168.43.1:9876 # dialed through wlan1
+    upstream: socks5://198.51.100.1:9876 # dialed through wlan1
 ```
 
 Traffic egresses the laptop's hotspot NIC into the phone, then the phone's

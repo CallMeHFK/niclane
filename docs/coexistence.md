@@ -26,7 +26,7 @@ niclane lanes do **not** touch the routing table at all. Each lane's sockets
 are created with `SO_BINDTODEVICE(<iface>)` (or `IP_BOUND_IF` on macOS). The
 kernel then performs the route lookup *restricted to that device*:
 
-- `interface: wlp130s0` → only routes whose output device is `wlp130s0` are
+- `interface: wlan0` → only routes whose output device is `wlan0` are
   considered. The TUN's hijacked default route is invisible to these
   sockets; the physical NIC's default route (table `main`) applies.
 - `interface: Mihomo` → the lane deliberately rides *into* the tunnel. This
@@ -50,7 +50,7 @@ explicitly:
 ```yaml
 lanes:
   - name: wifi
-    interface: wlp130s0
+    interface: wlan0
     dns_servers: [10.0.0.1, 223.5.5.5]   # first reachable wins, dialed via the lane
 ```
 
@@ -86,7 +86,7 @@ mismatch) and may fail in device mode if the device has no IPv6 route.
 niclane doctor            # capability probe + interface inventory
 niclane serve -c ...      # run your lanes
 niclane test -c ...       # observed exit IP per lane
-curl --interface wlp130s0 -s https://api.ipify.org   # cross-check a lane's NIC
+curl --interface wlan0 -s https://api.ipify.org   # cross-check a lane's NIC
 ```
 
 If a lane's exit IP matches the manual `curl --interface` on the same device,

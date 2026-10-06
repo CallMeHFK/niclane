@@ -26,7 +26,7 @@ VPN/TUN 虚拟网卡、Tailscale、Docker 网桥……全部共存于一张路�
 ## 工作原理
 
 ```
-应用 A ──> 127.0.0.1:7891 (socks5, 车道 wifi) ──[SO_BINDTODEVICE wlp130s0]──> WiFi 网卡 ──> 上行 A
+应用 A ──> 127.0.0.1:7891 (socks5, 车道 wifi) ──[SO_BINDTODEVICE wlan0]──> WiFi 网卡 ──> 上行 A
 应用 B ──> 127.0.0.1:7892 (http,  车道 dock)  ──[SO_BINDTODEVICE enx...]───> USB 网卡 ──> 上行 B
 应用 C ──> 127.0.0.1:7893 (socks5, 车道 tun)  ──[SO_BINDTODEVICE Mihomo]───> TUN     ──> 代理出口
 ```
@@ -80,7 +80,7 @@ lanes:
   - name: wifi
     listen: 127.0.0.1:7891
     type: socks5
-    interface: wlp130s0        # 出口钉在这张网卡
+    interface: wlan0        # 出口钉在这张网卡
   - name: dock
     listen: 127.0.0.1:7892
     type: http
@@ -129,8 +129,8 @@ niclane bench -c niclane.yaml -target <对端IP>:9999 -duration 10s
 
 ```
 LANE             TARGET                      UP MB/s   DOWN MB/s  RESULT
-dock             192.168.10.185:18999         3059.7      3057.1  ok (4.0s)
-wifi             192.168.10.185:18999              -           -  FAIL: dial through lane: i/o timeout
+dock             198.51.100.23:18999         3059.7      3057.1  ok (4.0s)
+wifi             198.51.100.23:18999              -           -  FAIL: dial through lane: i/o timeout
 
 fastest lane by downstream: dock (3057.1 MB/s)
 ```
@@ -187,7 +187,7 @@ fastest lane by downstream: dock (3057.1 MB/s)
 
 ```yaml
 lanes:
-  - { name: wifi, listen: 127.0.0.1:7891, interface: wlp130s0 }
+  - { name: wifi, listen: 127.0.0.1:7891, interface: wlan0 }
   - { name: dock, listen: 127.0.0.1:7892, interface: enxeaa1c366f80d }
 ```
 
@@ -205,7 +205,7 @@ lanes:
   - name: cell
     listen: 127.0.0.1:7894
     interface: wlan1                     # 只用热点网卡
-    upstream: socks5://192.168.43.1:9876 # 从 wlan1 拨出
+    upstream: socks5://198.51.100.1:9876 # 从 wlan1 拨出
 ```
 
 流量从笔记本热点网卡进入手机，再由手机侧绑蜂窝发出——`wlan0` 上的局域网

@@ -33,7 +33,7 @@ func deviceControl(ifName string, ifIndex int) controlFunc {
 
 // deviceBindSupported probes whether interface binding works on this host.
 func deviceBindSupported() bool {
-	iface, err := net.Interface("lo0")
+	iface, err := net.InterfaceByName("lo0")
 	if err != nil {
 		return false
 	}

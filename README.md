@@ -68,6 +68,8 @@ lane-bound UDP socket.
 - `niclane doctor` — interfaces, capability probe, suggested config
 - `niclane test` — verify each lane's real exit IP
 - `niclane status` + `/metrics` Prometheus endpoint
+- `niclane bench` — per-lane throughput measurement and comparison
+- SIGHUP hot-reload: add/remove/change lanes without restarting
 - Single static binary, no runtime dependencies
 
 ## Quick start
@@ -101,6 +103,9 @@ niclane serve -c niclane.yaml
 
 # verify each lane's real exit IP
 niclane test -c niclane.yaml
+
+# hot-reload after editing the config (add/remove/change lanes live)
+kill -HUP $(pidof niclane)
 ```
 
 Use it like any SOCKS5 proxy: `curl --socks5-hostname 127.0.0.1:7891 …`,
@@ -116,6 +121,29 @@ setting to the lane of your choice.
   with `AmbientCapabilities=CAP_NET_ADMIN`.
 - **macOS**: `IP_BOUND_IF` is unprivileged.
 - **Other platforms**: source-IP binding only.
+
+## Benchmarks
+
+`niclane bench` measures how much traffic each lane can push through its
+pinned NIC. Start the echo sink on a peer host reachable through the lanes:
+
+```bash
+niclane bench serve --listen :9999        # on the peer host
+niclane bench -c niclane.yaml -target <peer>:9999 -duration 10s
+```
+
+Example from the developer's laptop — the sink sits on the dock NIC's own
+address. The dock lane pushes ~3 GB/s through its NIC; the WiFi lane fails
+*because it has no route into the dock subnet at all* — that failure is the
+per-NIC isolation working as designed:
+
+```
+LANE             TARGET                      UP MB/s   DOWN MB/s  RESULT
+dock             192.168.10.185:18999         3059.7      3057.1  ok (4.0s)
+wifi             192.168.10.185:18999              -           -  FAIL: dial through lane: i/o timeout
+
+fastest lane by downstream: dock (3057.1 MB/s)
+```
 
 ## Configuration reference
 
@@ -156,6 +184,8 @@ Honest limitations:
   kernel may still route packets out a different interface (asymmetric
   routing). Only device mode gives a hard isolation guarantee. doctor tells
   you which mode you got, and the lane exposes `bind_mode` in `/status`.
+- ⚠️ **Windows pinning uses `IP_UNICAST_IF`** (unprivileged): it constrains
+  the *transmit* path only, so treat it as best-effort.
 - ⚠️ **UDP target resolution uses the system resolver** (the payload itself
   still egresses through the lane).
 - ⚠️ **`dns: system`** lets DNS follow the host default route — a potential
@@ -237,10 +267,8 @@ WantedBy=multi-user.target
 
 ## Roadmap
 
-- [ ] `niclane bench` throughput comparison across lanes
-- [ ] Windows `IP_UNICAST_IF` device binding
-- [ ] Config hot-reload
 - [ ] Per-lane DoH for `dns: lane`
+- [ ] UDP target resolution through the lane resolver
 
 ## Development
 

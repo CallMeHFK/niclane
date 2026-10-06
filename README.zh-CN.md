@@ -60,6 +60,8 @@ VPN/TUN 虚拟网卡、Tailscale、Docker 网桥……全部共存于一张路�
 - `niclane doctor` —— 网卡清单、能力探测、配置建议
 - `niclane test` —— 验证每条车道的真实出口 IP
 - `niclane status` + `/metrics` Prometheus 端点
+- `niclane bench` —— 按车道吞吐测量与对比
+- SIGHUP 热重载：不重启进程增删改车道
 - 单一静态二进制，零运行时依赖
 
 ## 快速开始
@@ -93,6 +95,9 @@ niclane serve -c niclane.yaml
 
 # 验证每条车道的真实出口 IP
 niclane test -c niclane.yaml
+
+# 改完配置后热重载（增删改车道无需重启）
+kill -HUP $(pidof niclane)
 ```
 
 像使用普通 SOCKS5 代理一样使用它：`curl --socks5-hostname 127.0.0.1:7891 …`、
@@ -107,6 +112,28 @@ niclane test -c niclane.yaml
   systemd `AmbientCapabilities=CAP_NET_ADMIN` 运行。
 - **macOS**：`IP_BOUND_IF` 无需特权。
 - **其他平台**：仅源 IP 绑定。
+
+## 基准测试
+
+`niclane bench` 测量每条车道经其绑定网卡能推多少流量。先在车道可达的对端
+主机上启动 echo sink：
+
+```bash
+niclane bench serve --listen :9999            # 对端主机上执行
+niclane bench -c niclane.yaml -target <对端IP>:9999 -duration 10s
+```
+
+开发者笔记本实测示例——sink 在扩展坞网卡自身地址上：dock 车道从其网卡推出
+约 3 GB/s；wifi 车道直接失败，**因为它根本没有通往坞网段的路由**——这正是
+按网卡隔离按设计生效的表现：
+
+```
+LANE             TARGET                      UP MB/s   DOWN MB/s  RESULT
+dock             192.168.10.185:18999         3059.7      3057.1  ok (4.0s)
+wifi             192.168.10.185:18999              -           -  FAIL: dial through lane: i/o timeout
+
+fastest lane by downstream: dock (3057.1 MB/s)
+```
 
 ## 配置参考
 
@@ -144,6 +171,8 @@ niclane test -c niclane.yaml
 - ⚠️ **源 IP 模式（`bind_ip` 或 `bind_mode: ip`）是尽力而为**：内核仍可能
   把包从其他接口发出（非对称路由）。只有 device 模式提供硬隔离。doctor 会
   告诉你实际处于哪种模式，`/status` 里有每车道的 `bind_mode`。
+- ⚠️ **Windows 用 `IP_UNICAST_IF` 绑定**（无需特权）：仅约束发送路径，
+  按尽力而为对待。
 - ⚠️ **UDP 目标解析用系统解析器**（载荷本身仍从车道出站）。
 - ⚠️ **`dns: system`** 时 DNS 走宿主默认路由——相对车道是潜在 DNS 泄漏。
   绑定车道默认 `dns: lane`。
@@ -219,10 +248,8 @@ WantedBy=multi-user.target
 
 ## 路线图
 
-- [ ] `niclane bench` 多车道吞吐对比
-- [ ] Windows `IP_UNICAST_IF` 设备绑定
-- [ ] 配置热重载
 - [ ] `dns: lane` 的 DoH 支持
+- [ ] UDP 目标解析走车道内解析器
 
 ## 参与开发
 

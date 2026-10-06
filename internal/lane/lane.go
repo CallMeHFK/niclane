@@ -58,6 +58,10 @@ func isUDPNetwork(network string) bool {
 	return network == "udp" || network == "udp4" || network == "udp6"
 }
 
+func isIPv6Network(network string) bool {
+	return network == "tcp6" || network == "udp6"
+}
+
 type snapshot struct {
 	healthy bool
 	lastErr string

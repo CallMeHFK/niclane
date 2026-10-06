@@ -383,7 +383,7 @@ func (s *Server) handleUDP(conn net.Conn) {
 			s.Egress.Reject("udp fragmentation requested")
 			continue
 		}
-		payload, dst, err := parseUDPHeader(buf[:n])
+		payload, dst, err := parseUDPHeader(ctx, buf[:n], s.Egress)
 		if err != nil {
 			s.Egress.Reject("udp header: " + err.Error())
 			continue
@@ -396,7 +396,9 @@ func (s *Server) handleUDP(conn net.Conn) {
 }
 
 // parseUDPHeader parses the SOCKS5 datagram header and resolves the target.
-func parseUDPHeader(pkt []byte) ([]byte, *net.UDPAddr, error) {
+// Domain targets resolve through the lane's DNS mode (lane/doh/system), so
+// UDP never leaks DNS queries out of the lane.
+func parseUDPHeader(ctx context.Context, pkt []byte, egress lane.Egress) ([]byte, *net.UDPAddr, error) {
 	atyp := pkt[3]
 	var host string
 	var rest []byte
@@ -425,12 +427,21 @@ func parseUDPHeader(pkt []byte) ([]byte, *net.UDPAddr, error) {
 	if len(rest) < 2 {
 		return nil, nil, errors.New("missing udp port")
 	}
-	port := binary.BigEndian.Uint16(rest[:2])
-	dst, err := net.ResolveUDPAddr("udp", net.JoinHostPort(host, fmt.Sprint(port)))
-	if err != nil {
-		return nil, nil, fmt.Errorf("resolve udp target: %w", err)
+	port := int(binary.BigEndian.Uint16(rest[:2]))
+	var ip net.IP
+	if atyp == atypDomain {
+		var err error
+		ip, err = egress.Resolve(ctx, "udp", host)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolve udp target %q: %w", host, err)
+		}
+	} else {
+		ip = net.ParseIP(host)
 	}
-	return rest[2:], dst, nil
+	if ip == nil {
+		return nil, nil, fmt.Errorf("bad udp target address %q", host)
+	}
+	return rest[2:], &net.UDPAddr{IP: ip, Port: port}, nil
 }
 
 // wrapUDPHeader prepends a SOCKS5 datagram header for the given source.

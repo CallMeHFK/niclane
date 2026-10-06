@@ -87,6 +87,9 @@ type Egress interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	// ListenUDP returns a UDP socket bound to the lane's interface.
 	ListenUDP(ctx context.Context) (*net.UDPConn, error)
+	// Resolve resolves host per the lane's DNS mode (lane/doh/system) and
+	// returns a single IP usable with the lane's source addresses.
+	Resolve(ctx context.Context, network, host string) (net.IP, error)
 	// Reject records a rejected connection.
 	Reject(reason string)
 	// Stats returns the lane's metrics bucket.
@@ -104,6 +107,7 @@ type Lane struct {
 
 	mu   sync.RWMutex
 	snap snapshot
+	doh  *dohClient
 }
 
 // New creates a lane from its configuration.
@@ -120,6 +124,7 @@ func New(cfg *config.LaneConfig, log *slog.Logger, stats *metrics.Stats) (*Lane,
 		l.upURL = u
 	}
 	l.snap = l.computeSnapshot()
+	l.doh = newDoHClient(cfg.EffectiveDoHURLs(), l.dohDial)
 	return l, nil
 }
 
@@ -401,14 +406,9 @@ func upstreamHostPort(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), port)
 }
 
-// dialRaw performs one pinned dial. Resolution strategy:
-//   - IP literal: dial directly.
-//   - dns=lane: resolve through the lane interface (prevents DNS leaking out
-//     of another NIC), then dial the IP.
-//   - dns=system with source binding: resolve with the system resolver first
-//     so a matching-family source address can be selected. DNS queries then
-//     follow the host default route (documented trade-off).
-//   - dns=system unbound, or device-bound: let the dialer resolve.
+// dialRaw performs one pinned dial. All non-literal hosts are resolved
+// through the lane's DNS mode (lane / doh / system) so DNS cannot silently
+// escape the lane.
 func (l *Lane) dialRaw(ctx context.Context, network, address string) (net.Conn, error) {
 	s := l.current()
 	if l.cfg.StrictEnabled() && !s.healthy {
@@ -429,21 +429,11 @@ func (l *Lane) dialRawUnchecked(ctx context.Context, network, address string, s 
 	switch {
 	case net.ParseIP(host) != nil:
 		ip = net.ParseIP(host)
-	case l.cfg.DNSMode() == config.DNSLane:
-		ip, err = l.resolve(ctx, host, s, network, true)
-		if err != nil {
-			return nil, err
-		}
-	case bound && s.control == nil:
-		// Source binding: resolve first to pick a matching-family source.
-		ip, err = l.resolve(ctx, host, s, network, false)
-		if err != nil {
-			return nil, err
-		}
 	default:
-		// Device-bound or unbound lane: the dialer resolves.
-		d := &net.Dialer{Timeout: 15 * time.Second, Control: s.control}
-		return d.DialContext(ctx, network, address)
+		ip, err = l.resolveHost(ctx, host, s, network)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	d := &net.Dialer{Timeout: 15 * time.Second, Control: s.control}
@@ -470,21 +460,40 @@ func familyName(ip net.IP) string {
 	return "IPv6"
 }
 
-// resolve looks up host and returns a single IP usable with the lane's source
-// addresses. When laneDNS is true the query itself egresses through the lane.
-func (l *Lane) resolve(ctx context.Context, host string, s snapshot, network string, laneDNS bool) (net.IP, error) {
-	res := net.DefaultResolver
-	if laneDNS {
-		res = l.resolver()
+// resolveHost looks up host per the lane's DNS mode and returns a single IP
+// usable with the lane's source addresses.
+func (l *Lane) resolveHost(ctx context.Context, host string, s snapshot, network string) (net.IP, error) {
+	var ips []net.IP
+	switch l.cfg.DNSMode() {
+	case config.DNSDoH:
+		l.stats.DNSQueries.Add(1)
+		var err error
+		ips, err = l.doh.Resolve(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", host, err)
+		}
+	case config.DNSLane:
+		l.stats.DNSQueries.Add(1)
+		ipAddrs, err := l.resolver().LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", host, err)
+		}
+		for _, ia := range ipAddrs {
+			ips = append(ips, ia.IP)
+		}
+	default: // system
+		l.stats.DNSQueries.Add(1)
+		ipAddrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", host, err)
+		}
+		for _, ia := range ipAddrs {
+			ips = append(ips, ia.IP)
+		}
 	}
-	l.stats.DNSQueries.Add(1)
-	ipAddrs, err := res.LookupIPAddr(ctx, host)
-	if err != nil {
-		return nil, fmt.Errorf("resolve %q: %w", host, err)
-	}
+
 	var usable []net.IP
-	for _, ia := range ipAddrs {
-		ip := ia.IP
+	for _, ip := range ips {
 		if (network == "tcp4" || network == "udp4") && ip.To4() == nil {
 			continue
 		}
@@ -507,6 +516,39 @@ func (l *Lane) resolve(ctx context.Context, host string, s snapshot, network str
 		return usable[0], nil
 	}
 	return nil, fmt.Errorf("resolve %q: no address family matches the lane source", host)
+}
+
+// Resolve implements Egress: it resolves host per the lane's DNS mode and
+// fails closed while the lane is unhealthy.
+func (l *Lane) Resolve(ctx context.Context, network, host string) (net.IP, error) {
+	s := l.current()
+	if l.cfg.StrictEnabled() && !s.healthy {
+		l.stats.RejectsTotal.Add(1)
+		return nil, fmt.Errorf("%w: %s", ErrFailClosed, s.lastErr)
+	}
+	return l.resolveHost(ctx, host, s, network)
+}
+
+// dohDial dials a DoH endpoint through the lane. IP-literal endpoints need no
+// bootstrap; a hostname endpoint is resolved with the lane's UDP resolver to
+// avoid a resolution loop.
+func (l *Lane) dohDial(ctx context.Context, network, address string) (net.Conn, error) {
+	if host, port, err := net.SplitHostPort(address); err == nil && net.ParseIP(host) == nil {
+		s := l.current()
+		l.stats.DNSQueries.Add(1)
+		ipAddrs, rerr := l.resolver().LookupIPAddr(ctx, host)
+		if rerr != nil {
+			return nil, fmt.Errorf("bootstrap doh endpoint %q: %w", host, rerr)
+		}
+		for _, ia := range ipAddrs {
+			if s.srcFor(ia.IP) != nil || s.control != nil {
+				address = net.JoinHostPort(ia.IP.String(), port)
+				break
+			}
+		}
+	}
+	s := l.current()
+	return l.dialRawUnchecked(ctx, network, address, s)
 }
 
 // resolver returns a resolver whose DNS traffic itself egresses through the

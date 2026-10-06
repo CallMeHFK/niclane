@@ -14,7 +14,7 @@ lanes:
   - name: wifi
     listen: 127.0.0.1:7891
     type: socks5               # socks5 | http
-    interface: wlp130s0        # egress pinned to this NIC
+    interface: wlan0        # egress pinned to this NIC
     # bind_mode: auto          # device | ip | auto (default auto)
     # strict: true             # default: reject while the NIC is down/unaddressed
     # auth:                    # optional inbound SOCKS5 auth
@@ -39,7 +39,7 @@ lanes:
   # - name: cell
   #   listen: 127.0.0.1:7894
   #   interface: wlan1
-  #   upstream: socks5://192.168.43.1:9876   # dialed through wlan1
+  #   upstream: socks5://198.51.100.1:9876   # dialed through wlan1
 
   # --- Source-IP-only binding (weak isolation, no privileges needed) --------
   # - name: by-ip

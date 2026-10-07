@@ -281,6 +281,17 @@ WantedBy=multi-user.target
 - [ ] TTL-aware DNS answer caching
 - [ ] SOCKS5 BIND command (rarely used)
 
+## Agent skill
+
+niclane ships an [Agent Skill](skills/niclane/SKILL.md) that teaches coding
+agents the full operate loop (doctor → config → serve → `test` as the
+acceptance gate → hot-reload) plus the failure modes worth disclosing. Install
+it so your agent can drive niclane unprompted:
+
+```bash
+mkdir -p ~/.agents/skills && cp -r skills/niclane ~/.agents/skills/
+```
+
 ## Development
 
 ```bash

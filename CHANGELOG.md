@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.2 — 2026-10-07
+
+- **Agent skill ships with every release**: `skills/niclane/SKILL.md` (the
+  operate-loop skill for coding agents) is bundled into all release archives
+  alongside the binary and docs, and can be installed with a single curl —
+  see the README "Agent skill" section.
+
 ## 0.3.1 — 2026-10-07
 
 Full-codebase review (three parallel audit passes + staticcheck); fixes:

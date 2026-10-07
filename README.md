@@ -288,8 +288,16 @@ agents the full operate loop (doctor → config → serve → `test` as the
 acceptance gate → hot-reload) plus the failure modes worth disclosing. Install
 it so your agent can drive niclane unprompted:
 
+From a clone, or without one straight from the repo:
+
 ```bash
+# from a clone
 mkdir -p ~/.agents/skills && cp -r skills/niclane ~/.agents/skills/
+
+# or straight from GitHub, no clone needed
+mkdir -p ~/.agents/skills/niclane && curl -fsSL \
+  https://raw.githubusercontent.com/CallMeHFK/niclane/main/skills/niclane/SKILL.md \
+  -o ~/.agents/skills/niclane/SKILL.md
 ```
 
 ## Development

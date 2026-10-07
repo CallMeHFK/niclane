@@ -266,8 +266,16 @@ niclane 自带一份 [Agent Skill](skills/niclane/SKILL.md)，教会编码 Agent
 操作闭环（doctor → 配置 → serve → 以 `test` 为验收门 → 热重载）以及需要如实
 披露的失败模式。安装后 Agent 即可自主驱动 niclane：
 
+已克隆仓库直接拷贝，或免克隆直接从 GitHub 拉：
+
 ```bash
+# 已克隆仓库
 mkdir -p ~/.agents/skills && cp -r skills/niclane ~/.agents/skills/
+
+# 免克隆，直接拉取
+mkdir -p ~/.agents/skills/niclane && curl -fsSL \
+  https://raw.githubusercontent.com/CallMeHFK/niclane/main/skills/niclane/SKILL.md \
+  -o ~/.agents/skills/niclane/SKILL.md
 ```
 
 ## 参与开发

@@ -24,6 +24,17 @@ archives:
   - formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - src: skills/niclane/SKILL.md
+        dst: skills/niclane/SKILL.md
+      - src: README.md
+        dst: README.md
+      - src: README.zh-CN.md
+        dst: README.zh-CN.md
+      - src: CHANGELOG.md
+        dst: CHANGELOG.md
+      - src: config.example.yaml
+        dst: config.example.yaml
     format_overrides:
       - goos: windows
         formats: [zip]

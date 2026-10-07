@@ -260,6 +260,16 @@ WantedBy=multi-user.target
 - [ ] 带 TTL 的 DNS 应答缓存
 - [ ] SOCKS5 BIND 命令（很少使用）
 
+## Agent 技能
+
+niclane 自带一份 [Agent Skill](skills/niclane/SKILL.md)，教会编码 Agent 完整
+操作闭环（doctor → 配置 → serve → 以 `test` 为验收门 → 热重载）以及需要如实
+披露的失败模式。安装后 Agent 即可自主驱动 niclane：
+
+```bash
+mkdir -p ~/.agents/skills && cp -r skills/niclane ~/.agents/skills/
+```
+
 ## 参与开发
 
 ```bash

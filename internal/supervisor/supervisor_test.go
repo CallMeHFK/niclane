@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,7 +75,10 @@ func TestHotReload(t *testing.T) {
 		t.Fatalf("bind mode = %q, want source-ip", st.Lanes[0].BindMode)
 	}
 
-	// Same config: the lane instance must be kept (no churn).
+	// Same config (modulo whitespace): the lane instance must be kept (no churn).
+	if err := os.WriteFile(path, []byte(cfgASame), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	before := sup.lanes["a"]
 	if err := sup.Reload(); err != nil {
 		t.Fatalf("reload same config: %v", err)
@@ -109,9 +114,40 @@ func TestHotReload(t *testing.T) {
 		t.Fatalf("state corrupted after failed reload: %+v", st)
 	}
 
-	// Admin endpoint reflects status.
+	// A reload whose new admin address cannot bind must be rejected wholesale:
+	// the old admin endpoint keeps serving and the lanes stay untouched.
+	holdLn, err := net.Listen("tcp", "127.0.0.1:18099") // occupies the target port
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holdLn.Close()
+	broken := `
+admin: 127.0.0.1:18099
+lanes:
+  - name: c
+    listen: 127.0.0.1:18093
+    bind_ip: 127.0.0.1
+`
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reload(); err == nil {
+		t.Fatal("reload with unbindable admin must fail")
+	}
+	if got := len(sup.Status().Lanes); got != 1 || sup.Status().Lanes[0].Name != "b" {
+		t.Fatalf("lanes changed despite failed admin reload: %+v", sup.Status().Lanes)
+	}
+	resp, err := http.Get("http://127.0.0.1:18090/status")
+	if err != nil {
+		t.Fatalf("old admin endpoint lost after failed reload: %v", err)
+	}
+	resp.Body.Close()
+
 	sup.Stop()
 	if len(sup.lanes) != 0 {
 		t.Fatal("lanes still running after Stop")
+	}
+	if sup.adminAddr != "" {
+		t.Fatal("adminAddr not reset by Stop")
 	}
 }

@@ -22,6 +22,19 @@ import (
 // interface (SO_BINDTODEVICE / IP_BOUND_IF).
 func DeviceBindSupported() bool { return deviceBindSupported() }
 
+var (
+	bindCapOnce   sync.Once
+	bindCapCached bool
+)
+
+// deviceBindAvailable caches the platform capability probe. Lanes consult it
+// so they degrade to source-IP mode instead of reporting healthy while every
+// device-bound dial would fail with EPERM.
+func deviceBindAvailable() bool {
+	bindCapOnce.Do(func() { bindCapCached = deviceBindSupported() })
+	return bindCapCached
+}
+
 // Refresh forces an immediate health snapshot update.
 func (l *Lane) Refresh() { l.refresh() }
 
@@ -56,10 +69,6 @@ type controlFunc func(network, address string, conn syscall.RawConn) error
 
 func isUDPNetwork(network string) bool {
 	return network == "udp" || network == "udp4" || network == "udp6"
-}
-
-func isIPv6Network(network string) bool {
-	return network == "tcp6" || network == "udp6"
 }
 
 type snapshot struct {
@@ -207,9 +216,10 @@ func (l *Lane) computeSnapshot() snapshot {
 		if s.src4 == nil && s.src6 == nil {
 			return unhealthy(s, fmt.Sprintf("interface %s has no usable address", cfg.Interface))
 		}
-		// On platforms without device binding (or explicit ip mode) fall
-		// back to source-IP binding using the addresses just collected.
-		if ctrl := deviceControl(cfg.Interface, ife.Index); ctrl != nil && cfg.BindMode != config.BindModeIP {
+		// Degrade to source-IP binding when device binding is unavailable
+		// (missing capability / unsupported platform) or explicitly disabled:
+		// otherwise the lane would look healthy and EPERM on every dial.
+		if ctrl := deviceControl(cfg.Interface, ife.Index); ctrl != nil && cfg.BindMode != config.BindModeIP && deviceBindAvailable() {
 			s.control = ctrl
 			s.mode = BindModeDevice
 		} else {
@@ -429,6 +439,11 @@ func (l *Lane) dialRawUnchecked(ctx context.Context, network, address string, s 
 	switch {
 	case net.ParseIP(host) != nil:
 		ip = net.ParseIP(host)
+	case !bound && l.cfg.DNSMode() == config.DNSSystem:
+		// Unbound lane with system DNS: let the dialer resolve so Happy
+		// Eyeballs can pick a working family.
+		d := &net.Dialer{Timeout: 15 * time.Second}
+		return d.DialContext(ctx, network, address)
 	default:
 		ip, err = l.resolveHost(ctx, host, s, network)
 		if err != nil {
@@ -497,7 +512,7 @@ func (l *Lane) resolveHost(ctx context.Context, host string, s snapshot, network
 		if (network == "tcp4" || network == "udp4") && ip.To4() == nil {
 			continue
 		}
-		if isUDPNetwork(network) && network == "udp6" && ip.To4() != nil {
+		if (network == "tcp6" || network == "udp6") && ip.To4() != nil {
 			continue
 		}
 		usable = append(usable, ip)
@@ -540,11 +555,18 @@ func (l *Lane) dohDial(ctx context.Context, network, address string) (net.Conn, 
 		if rerr != nil {
 			return nil, fmt.Errorf("bootstrap doh endpoint %q: %w", host, rerr)
 		}
+		resolved := false
 		for _, ia := range ipAddrs {
-			if s.srcFor(ia.IP) != nil || s.control != nil {
+			if s.srcFor(ia.IP) != nil || s.control != nil || !(l.cfg.Interface != "" || l.cfg.BindIP != "") {
 				address = net.JoinHostPort(ia.IP.String(), port)
+				resolved = true
 				break
 			}
+		}
+		if !resolved {
+			// Falling through would resolve the endpoint via DoH again — a
+			// resolution loop through ourselves.
+			return nil, fmt.Errorf("doh endpoint %q: no address family usable with the lane source", host)
 		}
 	}
 	s := l.current()

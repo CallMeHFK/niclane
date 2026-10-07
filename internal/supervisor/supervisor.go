@@ -104,6 +104,9 @@ func (s *Supervisor) Reload() error {
 	if s.rootCtx == nil {
 		return errors.New("supervisor not started")
 	}
+	if err := s.rootCtx.Err(); err != nil {
+		return fmt.Errorf("supervisor is shutting down: %w", err)
+	}
 	cfg, err := config.Load(s.path)
 	if err != nil {
 		return fmt.Errorf("keeping previous config: %w", err)
@@ -126,10 +129,22 @@ func (s *Supervisor) Stop() {
 		_ = s.adminLn.Close()
 		s.adminLn = nil
 	}
+	s.adminAddr = ""
 }
 
 // applyLocked reconciles the running state towards cfg; s.mu must be held.
+// The admin listener is pre-flighted BEFORE any lane is touched, so a bad
+// admin address aborts the reload with the previous state fully intact.
 func (s *Supervisor) applyLocked(cfg *config.Config) error {
+	var newAdmin net.Listener
+	if cfg.Admin != s.adminAddr && cfg.Admin != "" {
+		ln, err := net.Listen("tcp", cfg.Admin)
+		if err != nil {
+			return fmt.Errorf("admin: listen: %w", err)
+		}
+		newAdmin = ln
+	}
+
 	desired := make(map[string]*config.LaneConfig, len(cfg.Lanes))
 	for _, lc := range cfg.Lanes {
 		desired[lc.Name] = lc
@@ -198,10 +213,27 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 		s.startLane(lc, ln)
 	}
 
-	// Phase 4: admin endpoint.
-	if err := s.reconcileAdmin(cfg); err != nil {
-		return err
+	// Phase 4: swap the admin endpoint (pre-flighted above — cannot fail).
+	if newAdmin != nil || cfg.Admin != s.adminAddr {
+		if s.adminLn != nil {
+			_ = s.adminLn.Close()
+			s.adminLn = nil
+			s.adminAddr = ""
+		}
+		if newAdmin != nil {
+			s.adminLn = newAdmin
+			s.adminAddr = cfg.Admin
+			s.serveAdmin(newAdmin, cfg.Admin)
+		}
 	}
+
+	// Forget counters of lanes that no longer exist so /metrics stays
+	// consistent with /status.
+	keep := make(map[string]struct{}, len(desired))
+	for name := range desired {
+		keep[name] = struct{}{}
+	}
+	s.reg.Sweep(keep)
 
 	s.cfg = cfg
 	return nil
@@ -218,28 +250,14 @@ func (s *Supervisor) startLane(lc *config.LaneConfig, ln net.Listener) {
 	ctx, cancel := context.WithCancel(s.rootCtx)
 	l.Refresh() // populate health metrics before the first Status() read
 	go l.Run(ctx)
-	go serveLane(l, ln, lc, s.log)
+	go serveLane(l, ln, lc, s.log, ctx)
 	s.lanes[lc.Name] = &instance{cfg: lc, cancel: cancel, listener: ln, lane: l}
 	s.log.Info("lane listening", "listen", lc.Listen, "type", lc.TypeOrDefault(),
 		"egress", EgressDesc(lc), "strict", lc.StrictEnabled())
 }
 
-func (s *Supervisor) reconcileAdmin(cfg *config.Config) error {
-	if cfg.Admin == s.adminAddr {
-		return nil
-	}
-	if s.adminLn != nil {
-		_ = s.adminLn.Close()
-		s.adminLn = nil
-		s.adminAddr = ""
-	}
-	if cfg.Admin == "" {
-		return nil
-	}
-	ln, err := net.Listen("tcp", cfg.Admin)
-	if err != nil {
-		return fmt.Errorf("admin: listen: %w", err)
-	}
+// serveAdmin runs the admin HTTP server on an already-listening endpoint.
+func (s *Supervisor) serveAdmin(ln net.Listener, addr string) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -249,17 +267,14 @@ func (s *Supervisor) reconcileAdmin(cfg *config.Config) error {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(s.Status())
 	})
-	s.adminLn = ln
-	s.adminAddr = cfg.Admin
 	go func() {
-		s.log.Info("admin endpoint", "addr", cfg.Admin, "paths", "/metrics /status")
+		s.log.Info("admin endpoint", "addr", addr, "paths", "/metrics /status")
 		_ = (&http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 	}()
-	return nil
 }
 
 // serveLane runs the protocol loop of one lane on its listener.
-func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.Logger) {
+func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.Logger, ctx context.Context) {
 	idle, _ := lc.IdleTimeoutDur()
 	switch lc.TypeOrDefault() {
 	case config.TypeSocks5:
@@ -267,12 +282,18 @@ func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.L
 		if err != nil || host == "" {
 			host = "0.0.0.0"
 		}
-		srv := &socks5.Server{Egress: l, Auth: lc.Auth, Log: log, Idle: idle, ListenHost: host}
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, net.ErrClosed) {
+		srv := &socks5.Server{Egress: l, Auth: lc.Auth, Log: log, Idle: idle, ListenHost: host, Ctx: ctx}
+		// Serve returns nil on graceful listener close.
+		if err := srv.Serve(ln); err != nil {
 			log.Error("socks5 lane stopped", "lane", lc.Name, "error", err)
 		}
 	case config.TypeHTTP:
-		srv := &http.Server{Handler: httpproxy.NewHandler(l, log, idle), ReadHeaderTimeout: 30 * time.Second}
+		srv := &http.Server{
+			Handler:           httpproxy.NewHandler(l, log, idle, ctx),
+			ReadHeaderTimeout: 30 * time.Second,
+			// Forward requests observe the lane context through r.Context().
+			BaseContext: func(net.Listener) context.Context { return ctx },
+		}
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			log.Error("http lane stopped", "lane", lc.Name, "error", err)
 		}

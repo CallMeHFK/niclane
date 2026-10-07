@@ -54,14 +54,29 @@ type Server struct {
 	// ListenHost is the host the TCP listener binds ("0.0.0.0" when
 	// unspecified); the client-facing UDP socket binds the same address.
 	ListenHost string
+	// Ctx, when set, closes every accepted connection (and UDP associations)
+	// when the lane is stopped (config reload / shutdown).
+	Ctx context.Context
 }
 
-// Serve accepts connections until the listener is closed.
+// Serve accepts connections until the listener is closed. A graceful close
+// (lane stop / shutdown) returns nil; other accept failures return their
+// error.
 func (s *Server) Serve(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			if errors.Is(err, net.ErrClosed) {
+				return nil
+			}
 			return err
+		}
+		if s.Ctx != nil {
+			ctx := s.Ctx
+			go func() {
+				<-ctx.Done()
+				_ = conn.Close()
+			}()
 		}
 		go s.handle(conn)
 	}
@@ -149,8 +164,11 @@ func (s *Server) auth(conn net.Conn) error {
 
 func (s *Server) userPass(conn net.Conn) error {
 	head := make([]byte, 2)
-	if _, err := io.ReadFull(conn, head); err != nil || head[0] != 0x01 {
-		return errors.New("malformed username/password subnegotiation")
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return fmt.Errorf("read auth subnegotiation: %w", err)
+	}
+	if head[0] != 0x01 {
+		return fmt.Errorf("unsupported auth subnegotiation version %#x", head[0])
 	}
 	user := make([]byte, int(head[1]))
 	if _, err := io.ReadFull(conn, user); err != nil {
@@ -273,18 +291,11 @@ func (s *Server) handleConnect(conn net.Conn, req *socksRequest) {
 	}
 	defer egress.Close()
 
-	if err := s.reply(conn, repSucceeded, localIP(egress), 0); err != nil {
+	if err := s.reply(conn, repSucceeded, nil, 0); err != nil {
 		return
 	}
 	s.log().Debug("tunnel established", "target", target)
 	relay.Pipe(conn, egress, s.Idle, nil)
-}
-
-func localIP(conn net.Conn) net.IP {
-	if addr, ok := conn.LocalAddr().(*net.TCPAddr); ok {
-		return addr.IP
-	}
-	return nil
 }
 
 // handleUDP implements UDP ASSOCIATE. Two UDP sockets are involved: a
@@ -293,7 +304,11 @@ func localIP(conn net.Conn) net.IP {
 // rejected. UDP target resolution uses the system resolver (documented
 // limitation); the payload itself always egresses through the lane.
 func (s *Server) handleUDP(conn net.Conn) {
-	ctx, cancel := context.WithCancel(context.Background())
+	base := s.Ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithCancel(base)
 	defer cancel()
 
 	clientIP := net.ParseIP(s.ListenHost)
@@ -323,9 +338,17 @@ func (s *Server) handleUDP(conn net.Conn) {
 
 	stats := s.Egress.Stats()
 	var clientAddr *net.UDPAddr
+	var lastTarget *net.UDPAddr
 	var mu sync.Mutex
 
-	// Tear the association down when the TCP control connection closes.
+	// Tear the association down when the TCP control connection closes: the
+	// watcher cancels the context, and this goroutine closes both UDP sockets
+	// so the loops below unblock instead of leaking the association.
+	go func() {
+		<-ctx.Done()
+		_ = cuc.Close()
+		_ = uc.Close()
+	}()
 	go func() {
 		one := make([]byte, 1)
 		for {
@@ -346,8 +369,13 @@ func (s *Server) handleUDP(conn net.Conn) {
 			}
 			mu.Lock()
 			dst := clientAddr
+			tgt := lastTarget
 			mu.Unlock()
-			if dst == nil {
+			if dst == nil || tgt == nil {
+				continue
+			}
+			if from.String() != tgt.String() {
+				// Not from the current target: drop (possible spoof).
 				continue
 			}
 			packet := wrapUDPHeader(from, buf[:n])
@@ -388,6 +416,9 @@ func (s *Server) handleUDP(conn net.Conn) {
 			s.Egress.Reject("udp header: " + err.Error())
 			continue
 		}
+		mu.Lock()
+		lastTarget = dst
+		mu.Unlock()
 		if _, err := uc.WriteToUDP(payload, dst); err == nil {
 			stats.UDPRelays.Add(1)
 			stats.BytesUp.Add(int64(len(payload)))

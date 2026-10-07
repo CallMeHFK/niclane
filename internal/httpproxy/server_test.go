@@ -1,6 +1,7 @@
 package httpproxy
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"net"
@@ -32,9 +33,63 @@ func newLane(t *testing.T, lc *config.LaneConfig) *lane.Lane {
 // startProxy launches an HTTP proxy handler on 127.0.0.1 and returns its URL.
 func startProxy(t *testing.T, egress lane.Egress) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewHandler(egress, discardLogger(), 0))
+	srv := httptest.NewServer(NewHandler(egress, discardLogger(), 0, context.Background()))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// TestHTTPConnectPipelinedBytes: bytes the client sends in the same segment
+// as the CONNECT header (after it) must reach the backend, not be dropped.
+func TestHTTPConnectPipelinedBytes(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	payload := make(chan []byte, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			payload <- nil
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 1024)
+		n, _ := conn.Read(buf)
+		payload <- buf[:n]
+	}()
+
+	l := newLane(t, &config.LaneConfig{Name: "lo", Listen: "127.0.0.1:0", BindIP: "127.0.0.1"})
+	proxy := startProxy(t, l)
+
+	conn, err := net.Dial("tcp", proxy.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	target := ln.Addr().String()
+	// CONNECT header and tunnel data in ONE write, like pipelining clients do.
+	req := "CONNECT " + target + " HTTP/1.1\r\nHost: " + target + "\r\n\r\n"
+	if _, err := conn.Write([]byte(req + "pipelined-payload")); err != nil {
+		t.Fatal(err)
+	}
+	// Consume the 200 response head.
+	buf := make([]byte, 1024)
+	var head []byte
+	for len(head) < 4 || string(head[len(head)-4:]) != "\r\n\r\n" {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		head = append(head, buf[:n]...)
+	}
+
+	got := <-payload
+	if string(got) != "pipelined-payload" {
+		t.Fatalf("backend got %q, want %q", string(got), "pipelined-payload")
+	}
 }
 
 func TestHTTPForwardAbsoluteURI(t *testing.T) {

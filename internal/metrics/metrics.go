@@ -63,6 +63,22 @@ func (r *Registry) Register(name string) *Stats {
 	return s
 }
 
+// Sweep drops every lane bucket not in keep, so removed lanes stop being
+// rendered after a config reload.
+func (r *Registry) Sweep(keep map[string]struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	order := make([]string, 0, len(r.order))
+	for _, name := range r.order {
+		if _, ok := keep[name]; ok {
+			order = append(order, name)
+		} else {
+			delete(r.lanes, name)
+		}
+	}
+	r.order = order
+}
+
 // Names returns the registered lane names in insertion order.
 func (r *Registry) Names() []string {
 	r.mu.RLock()
@@ -96,22 +112,25 @@ func (r *Registry) RenderPrometheus(version string) string {
 			continue
 		}
 		l := fmt.Sprintf("{lane=%q}", name)
-		g := func(name, help string, v int64) {
+		gauge := func(name, help string, v int64) {
 			fmt.Fprintf(&b, "# HELP niclane_%s %s\n# TYPE niclane_%s gauge\nniclane_%s%s %d\n", name, help, name, name, l, v)
 		}
-		g("connections_total", "Total accepted connections.", s.ConnsTotal.Load())
-		g("connections_active", "Currently active connections.", s.ConnsActive.Load())
-		g("rejects_total", "Connections rejected (fail-closed or protocol errors).", s.RejectsTotal.Load())
-		g("bytes_up", "Bytes relayed client -> egress.", s.BytesUp.Load())
-		g("bytes_down", "Bytes relayed egress -> client.", s.BytesDown.Load())
-		g("dns_queries_total", "DNS queries resolved through the lane.", s.DNSQueries.Load())
-		g("udp_relays_total", "UDP datagrams relayed through the lane.", s.UDPRelays.Load())
+		counter := func(name, help string, v int64) {
+			fmt.Fprintf(&b, "# HELP niclane_%s %s\n# TYPE niclane_%s counter\nniclane_%s%s %d\n", name, help, name, name, l, v)
+		}
+		counter("connections_total", "Total accepted connections.", s.ConnsTotal.Load())
+		gauge("connections_active", "Currently active connections.", s.ConnsActive.Load())
+		counter("rejects_total", "Connections rejected (fail-closed or protocol errors).", s.RejectsTotal.Load())
+		counter("bytes_up", "Bytes relayed client -> egress.", s.BytesUp.Load())
+		counter("bytes_down", "Bytes relayed egress -> client.", s.BytesDown.Load())
+		counter("dns_queries_total", "DNS queries resolved through the lane.", s.DNSQueries.Load())
+		counter("udp_relays_total", "UDP datagrams relayed through the lane.", s.UDPRelays.Load())
 		healthy := int64(0)
 		if s.Healthy.Load() {
 			healthy = 1
 		}
-		g("healthy", "Whether the lane egress is currently considered usable.", healthy)
-		g("bind_mode", "Egress binding mode: 0=none, 1=source-ip, 2=device.", s.BindMode.Load())
+		gauge("healthy", "Whether the lane egress is currently considered usable.", healthy)
+		gauge("bind_mode", "Egress binding mode: 0=none, 1=source-ip, 2=device.", s.BindMode.Load())
 	}
 	return b.String()
 }

@@ -59,6 +59,10 @@ func ServeSink(ln net.Listener) error {
 // reachable through the lane's pinned NIC.
 func RunLane(ctx context.Context, egress lane.Egress, target string, duration time.Duration, block int) Result {
 	res := Result{Lane: egress.Name(), Target: target}
+	if duration <= 0 {
+		res.Err = errors.New("duration must be positive")
+		return res
+	}
 	if block <= 0 {
 		block = DefaultBlock
 	}
@@ -73,7 +77,7 @@ func RunLane(ctx context.Context, egress lane.Egress, target string, duration ti
 	start := time.Now()
 	deadline := start.Add(duration)
 	_ = conn.SetWriteDeadline(deadline)
-	_ = conn.SetReadDeadline(deadline.Add(2 * time.Second))
+	_ = conn.SetReadDeadline(deadline.Add(250 * time.Millisecond))
 
 	var up, down atomic.Int64
 	var wg sync.WaitGroup
@@ -107,6 +111,10 @@ func RunLane(ctx context.Context, egress lane.Egress, target string, duration ti
 	res.Up = up.Load()
 	res.Down = down.Load()
 	res.Elapsed = time.Since(start)
+	// The final read waits out the grace window; do not inflate MB/s with it.
+	if maxElapsed := duration + 250*time.Millisecond; res.Elapsed > maxElapsed {
+		res.Elapsed = maxElapsed
+	}
 	if res.Up == 0 && res.Down == 0 {
 		res.Err = errors.New("no traffic measured")
 	}

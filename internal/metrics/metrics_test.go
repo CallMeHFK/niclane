@@ -15,7 +15,14 @@ func TestRenderPrometheus(t *testing.T) {
 	s.BindMode.Store(2)
 	r.Register("dock")
 
+	r.Sweep(map[string]struct{}{"wifi": {}})
 	out := r.RenderPrometheus("test")
+	if strings.Contains(out, `lane="dock"`) {
+		t.Fatal("swept lane still rendered")
+	}
+	if !strings.Contains(out, "# TYPE niclane_connections_total counter") {
+		t.Fatal("connections_total must be typed counter")
+	}
 	for _, want := range []string{
 		`niclane_build_info{version="test"}`,
 		`niclane_connections_total{lane="wifi"} 3`,
@@ -23,7 +30,6 @@ func TestRenderPrometheus(t *testing.T) {
 		`niclane_bytes_up{lane="wifi"} 100`,
 		`niclane_healthy{lane="wifi"} 1`,
 		`niclane_bind_mode{lane="wifi"} 2`,
-		`niclane_connections_total{lane="dock"} 0`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("rendered output missing %q\n%s", want, out)

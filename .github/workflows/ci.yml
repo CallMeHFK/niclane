@@ -37,4 +37,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      # A build step catches missing packages (go test silently skips
+      # directories that are absent — this once hid an untracked cmd/).
+      - run: go build ./...
       - run: go test -race -count=1 ./...

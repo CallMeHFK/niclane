@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strconv"
 	"time"
 )
 
@@ -82,6 +83,9 @@ func socks5ClientHandshake(conn net.Conn, target string, userinfo *url.Userinfo)
 	head := make([]byte, 4)
 	if _, err := io.ReadFull(conn, head); err != nil {
 		return fmt.Errorf("read reply: %w", err)
+	}
+	if head[0] != 0x05 {
+		return fmt.Errorf("unexpected upstream reply version %#x", head[0])
 	}
 	if head[1] != 0x00 {
 		return fmt.Errorf("upstream connect failed, socks reply %#x", head[1])
@@ -165,8 +169,7 @@ func httpConnectHandshake(ctx context.Context, conn net.Conn, target string, use
 }
 
 func parsePort(s string) (uint16, error) {
-	var p int
-	_, err := fmt.Sscanf(s, "%d", &p)
+	p, err := strconv.Atoi(s)
 	if err != nil || p <= 0 || p > 65535 {
 		return 0, fmt.Errorf("invalid port %q", s)
 	}
@@ -189,11 +192,10 @@ func firstLine(s string) string {
 	return s
 }
 
-// byteReader reads until CRLFCRLF without buffering past the header, so the
-// remaining bytes can still be relayed raw.
+// byteReader reads until CRLFCRLF without buffering past the header, so no
+// pipelined bytes are lost.
 type byteReader struct {
 	conn io.Reader
-	buf  []byte
 }
 
 func newByteReader(conn io.Reader) *byteReader { return &byteReader{conn: conn} }

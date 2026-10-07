@@ -107,13 +107,14 @@ func cmdServe(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := sup.Start(ctx); err != nil {
-		return err
-	}
-
+	// Register SIGHUP before Start so an early SIGHUP cannot hit the default
+	// handler and kill the process mid-startup.
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	defer signal.Stop(sighup)
+	if err := sup.Start(ctx); err != nil {
+		return err
+	}
 
 	log.Info("niclane started", "version", version.Version, "lanes", len(cfg.Lanes),
 		"reload", "send SIGHUP to apply config changes")
@@ -179,8 +180,13 @@ func cmdTest(args []string) error {
 			Transport: &http.Transport{DialContext: l.DialContext, TLSHandshakeTimeout: 5 * time.Second},
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, *urlFlag, nil)
-		resp, err := client.Do(req)
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, *urlFlag, nil)
+		var resp *http.Response
+		if reqErr == nil {
+			resp, err = client.Do(req)
+		} else {
+			err = reqErr
+		}
 		cancel()
 		if err != nil {
 			fmt.Printf("%-16s %-10v %-12s %-22s FAIL: %v\n", lc.Name, healthy, bindModeStr(mode), supervisor.EgressDesc(lc), err)
@@ -253,19 +259,22 @@ func cmdBench(args []string) error {
 	}
 
 	fmt.Printf("%-16s %-24s %10s %11s  %s\n", "LANE", "TARGET", "UP MB/s", "DOWN MB/s", "RESULT")
-	best := results[0]
-	for _, r := range results {
+	var best *bench.Result
+	for i := range results {
+		r := results[i]
 		if r.Err != nil {
 			fmt.Printf("%-16s %-24s %10s %11s  FAIL: %v\n", r.Lane, r.Target, "-", "-", r.Err)
 			continue
 		}
 		fmt.Printf("%-16s %-24s %10.1f %11.1f  ok (%.1fs)\n",
 			r.Lane, r.Target, r.MBytesPerSec(r.Up), r.MBytesPerSec(r.Down), r.Elapsed.Seconds())
-		if r.Down > best.Down {
-			best = r
+		if best == nil || r.Down > best.Down {
+			best = &results[i]
 		}
 	}
-	fmt.Printf("\nfastest lane by downstream: %s (%.1f MB/s)\n", best.Lane, best.MBytesPerSec(best.Down))
+	if best != nil {
+		fmt.Printf("\nfastest lane by downstream: %s (%.1f MB/s)\n", best.Lane, best.MBytesPerSec(best.Down))
+	}
 	return nil
 }
 

@@ -123,7 +123,7 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// Validate checks cross-field constraints. It never mutates the config.
+// Validate checks cross-field constraints and fills the log_level default.
 func (c *Config) Validate() error {
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
@@ -183,9 +183,6 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("lane %q: auth is only supported for socks5 lanes", ln.Name)
 		}
 		if ln.Upstream != "" {
-			if ln.TypeOrDefault() != ln.Type && ln.Type == "" {
-				// fine: default type
-			}
 			switch schemeOf(ln.Upstream) {
 			case "socks5", "http":
 			default:

@@ -179,6 +179,8 @@ fastest lane by downstream: dock (3057.1 MB/s)
   告诉你实际处于哪种模式，`/status` 里有每车道的 `bind_mode`。
 - ⚠️ **Windows 用 `IP_UNICAST_IF` 绑定**（无需特权）：仅约束发送路径，
   按尽力而为对待。
+- ⚠️ **源 IP 模式的车道每条 UDP 关联只绑一个 socket**，优先取网卡 IPv4
+  地址；双栈并存时该类车道无法到达 IPv6 UDP 目标（device 模式无此限制）。
 - ⚠️ **UDP 目标解析走车道 DNS 模式**；UDP 目标为 IP 字面量时无需解析。
   v0.3.0 之前域名走系统解析器。
 - ⚠️ **`dns: system`** 时 DNS 走宿主默认路由——相对车道是潜在 DNS 泄漏。

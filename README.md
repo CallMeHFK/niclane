@@ -193,6 +193,9 @@ Honest limitations:
   you which mode you got, and the lane exposes `bind_mode` in `/status`.
 - ⚠️ **Windows pinning uses `IP_UNICAST_IF`** (unprivileged): it constrains
   the *transmit* path only, so treat it as best-effort.
+- ⚠️ **Source-IP lanes bind one UDP socket per association**, preferring the
+  interface's IPv4 address; IPv6 UDP targets are unreachable on such lanes
+  when both families exist (device-mode lanes do not have this limitation).
 - ⚠️ **UDP target resolution uses the lane's DNS mode; UDP target *IP
   literals* need no resolution.** Prior to v0.3.0 domains were resolved with
   the system resolver.

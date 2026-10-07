@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.3.1 — 2026-10-07
+
+Full-codebase review (three parallel audit passes + staticcheck); fixes:
+
+- **UDP ASSOCIATE leak (critical)**: closing the TCP control connection never
+  tore the association down — the client-facing socket, the lane-bound socket
+  and two goroutines leaked per association. Both sockets are now closed on
+  association end.
+- **Half-close semantics**: relays no longer full-close both connections on
+  the first EOF; a clean EOF half-closes the peer so CONNECT tunnels keep
+  flowing (a client that FINs after its request still gets the response).
+- **Shared idle timeout**: the idle deadline is now a watchdog over a shared
+  activity timestamp — one-directional transfers (long downloads) are no
+  longer killed, and a wedged peer cannot pin a tunnel forever.
+- **UDP hardening**: datagrams from sources other than the current relay
+  target are dropped (RFC 1928 replies come from the target); CONNECT
+  success replies use a zero BND.ADDR instead of leaking the egress NIC IP.
+- **Pipelined bytes after CONNECT** are delivered to the backend instead of
+  being dropped (prefix conn over the hijacked buffer).
+- **DoH bootstrap loop guard**: an endpoint whose family never matches the
+  lane source fails explicitly instead of recursing through itself.
+- **Capability-aware binding**: without SO_BINDTODEVICE permission (old
+  kernels) lanes degrade to source-IP mode instead of reporting healthy while
+  every dial would EPERM; `tcp6`/`udp6` now filter IPv4 answers.
+- **Reload all-or-nothing**: the admin listener is pre-flighted before any
+  lane is touched — a bad admin address no longer loses the endpoint or
+  desyncs `/status`; lanes now cancel in-flight connections on reload/stop;
+  `/metrics` prunes removed lanes and types counters correctly.
+- **CLI hardening**: `niclane test` no longer panics on an unparseable
+  `--url`; SIGHUP is registered before startup so an early signal cannot kill
+  the process; `bench` reports honest elapsed time and picks the fastest lane
+  only among successful ones.
+- Unbound lanes with `dns: system` regain dialer-side resolution (Happy
+  Eyeballs across address families).
+
 ## 0.3.0 — 2026-10-07
 
 - **DNS-over-HTTPS lanes**: `dns: doh` resolves domains via the DNS-JSON API

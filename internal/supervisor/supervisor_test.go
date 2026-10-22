@@ -151,3 +151,37 @@ lanes:
 		t.Fatal("adminAddr not reset by Stop")
 	}
 }
+
+const cfgCandidates = `
+lanes:
+  - name: c
+    listen: 127.0.0.1:18093
+    candidates:
+      - upstream: http://127.0.0.1:1
+    discover:
+      interval: 2s
+`
+
+func TestStatusIncludesCandidates(t *testing.T) {
+	path := writeCfg(t, cfgCandidates)
+	sup, err := New(path, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sup.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	st := sup.Status()
+	if len(st.Lanes) != 1 {
+		t.Fatalf("lanes = %d", len(st.Lanes))
+	}
+	ls := st.Lanes[0]
+	if ls.Egress != "candidates:1" {
+		t.Fatalf("egress = %q", ls.Egress)
+	}
+	if len(ls.Candidates) != 1 || ls.Candidates[0].Source != "static" || ls.Candidates[0].Priority != 1000 {
+		t.Fatalf("candidates = %+v", ls.Candidates)
+	}
+}

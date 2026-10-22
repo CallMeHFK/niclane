@@ -19,6 +19,7 @@ import (
 	"github.com/CallMeHFK/niclane/internal/httpproxy"
 	"github.com/CallMeHFK/niclane/internal/lane"
 	"github.com/CallMeHFK/niclane/internal/metrics"
+	"github.com/CallMeHFK/niclane/internal/selector"
 	"github.com/CallMeHFK/niclane/internal/socks5"
 	"github.com/CallMeHFK/niclane/internal/version"
 )
@@ -31,26 +32,29 @@ type Status struct {
 
 // LaneStatus is the runtime state of one lane.
 type LaneStatus struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Egress      string `json:"egress"`
-	Healthy     bool   `json:"healthy"`
-	BindMode    string `json:"bind_mode"`
-	LastErr     string `json:"last_error,omitempty"`
-	ConnsTotal  int64  `json:"connections_total"`
-	ConnsActive int64  `json:"connections_active"`
-	Rejects     int64  `json:"rejects_total"`
-	BytesUp     int64  `json:"bytes_up"`
-	BytesDown   int64  `json:"bytes_down"`
-	DNSQueries  int64  `json:"dns_queries_total"`
-	UDPRelays   int64  `json:"udp_relays_total"`
+	Name        string                     `json:"name"`
+	Type        string                     `json:"type"`
+	Egress      string                     `json:"egress"`
+	Healthy     bool                       `json:"healthy"`
+	BindMode    string                     `json:"bind_mode"`
+	LastErr     string                     `json:"last_error,omitempty"`
+	ConnsTotal  int64                      `json:"connections_total"`
+	ConnsActive int64                      `json:"connections_active"`
+	Rejects     int64                      `json:"rejects_total"`
+	BytesUp     int64                      `json:"bytes_up"`
+	BytesDown   int64                      `json:"bytes_down"`
+	DNSQueries  int64                      `json:"dns_queries_total"`
+	UDPRelays   int64                      `json:"udp_relays_total"`
+	Candidates  []selector.CandidateStatus `json:"candidates,omitempty"`
 }
 
 type instance struct {
 	cfg      *config.LaneConfig
 	cancel   context.CancelFunc
 	listener net.Listener
+	rt       lane.Provider
 	lane     *lane.Lane
+	sel      *selector.Selector
 }
 
 func (i *instance) stop() {
@@ -199,7 +203,7 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 
 	// Phase 3: start pre-flighted lanes, then lanes whose port was freed.
 	for _, f := range fresh {
-		s.startLane(f.lc, f.ln)
+		s.startLane(f.lc, f.ln, cfg.Discovery)
 	}
 	for name, lc := range desired {
 		if _, running := s.lanes[name]; running {
@@ -210,7 +214,7 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 			s.log.Error("lane start failed during reload", "lane", name, "error", err)
 			continue
 		}
-		s.startLane(lc, ln)
+		s.startLane(lc, ln, cfg.Discovery)
 	}
 
 	// Phase 4: swap the admin endpoint (pre-flighted above — cannot fail).
@@ -239,19 +243,40 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 	return nil
 }
 
-func (s *Supervisor) startLane(lc *config.LaneConfig, ln net.Listener) {
+func (s *Supervisor) startLane(lc *config.LaneConfig, ln net.Listener, disc *config.DiscoveryConfig) {
 	st := s.reg.Register(lc.Name)
-	l, err := lane.New(lc, s.log, st)
-	if err != nil {
-		_ = ln.Close()
-		s.log.Error("lane creation failed", "lane", lc.Name, "error", err)
-		return
+	var (
+		l   *lane.Lane
+		sel *selector.Selector
+		rt  lane.Provider
+		err error
+	)
+	if lc.HasCandidates() {
+		sel, err = selector.New(lc, disc, s.log, st)
+		if err != nil {
+			_ = ln.Close()
+			s.log.Error("lane creation failed", "lane", lc.Name, "error", err)
+			return
+		}
+		rt = sel
+	} else {
+		l, err = lane.New(lc, s.log, st)
+		if err != nil {
+			_ = ln.Close()
+			s.log.Error("lane creation failed", "lane", lc.Name, "error", err)
+			return
+		}
+		l.Refresh() // populate health metrics before the first Status() read
+		rt = l
 	}
 	ctx, cancel := context.WithCancel(s.rootCtx)
-	l.Refresh() // populate health metrics before the first Status() read
-	go l.Run(ctx)
-	go serveLane(l, ln, lc, s.log, ctx)
-	s.lanes[lc.Name] = &instance{cfg: lc, cancel: cancel, listener: ln, lane: l}
+	if sel != nil {
+		go sel.Run(ctx)
+	} else {
+		go l.Run(ctx)
+	}
+	go serveLane(rt, ln, lc, s.log, ctx)
+	s.lanes[lc.Name] = &instance{cfg: lc, cancel: cancel, listener: ln, rt: rt, lane: l, sel: sel}
 	s.log.Info("lane listening", "listen", lc.Listen, "type", lc.TypeOrDefault(),
 		"egress", EgressDesc(lc), "strict", lc.StrictEnabled())
 }
@@ -274,7 +299,7 @@ func (s *Supervisor) serveAdmin(ln net.Listener, addr string) {
 }
 
 // serveLane runs the protocol loop of one lane on its listener.
-func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.Logger, ctx context.Context) {
+func serveLane(p lane.Provider, ln net.Listener, lc *config.LaneConfig, log *slog.Logger, ctx context.Context) {
 	idle, _ := lc.IdleTimeoutDur()
 	switch lc.TypeOrDefault() {
 	case config.TypeSocks5:
@@ -282,14 +307,14 @@ func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.L
 		if err != nil || host == "" {
 			host = "0.0.0.0"
 		}
-		srv := &socks5.Server{Egress: l, Auth: lc.Auth, Log: log, Idle: idle, ListenHost: host, Ctx: ctx}
+		srv := &socks5.Server{Provider: p, Auth: lc.Auth, Log: log, Idle: idle, ListenHost: host, Ctx: ctx}
 		// Serve returns nil on graceful listener close.
 		if err := srv.Serve(ln); err != nil {
 			log.Error("socks5 lane stopped", "lane", lc.Name, "error", err)
 		}
 	case config.TypeHTTP:
 		srv := &http.Server{
-			Handler:           httpproxy.NewHandler(l, log, idle, ctx),
+			Handler:           httpproxy.NewHandler(p, log, idle, ctx),
 			ReadHeaderTimeout: 30 * time.Second,
 			// Forward requests observe the lane context through r.Context().
 			BaseContext: func(net.Listener) context.Context { return ctx },
@@ -302,6 +327,12 @@ func serveLane(l *lane.Lane, ln net.Listener, lc *config.LaneConfig, log *slog.L
 
 // EgressDesc renders the lane's egress binding for logs and status.
 func EgressDesc(lc *config.LaneConfig) string {
+	if lc.HasCandidates() {
+		if n := len(lc.Candidates); n > 0 {
+			return fmt.Sprintf("candidates:%d", n)
+		}
+		return "candidates:discover"
+	}
 	switch {
 	case lc.Interface != "":
 		return "device:" + lc.Interface
@@ -331,17 +362,34 @@ func (s *Supervisor) Status() Status {
 	for _, lc := range s.cfg.Lanes {
 		ls := LaneStatus{Name: lc.Name, Type: lc.TypeOrDefault(), Egress: EgressDesc(lc)}
 		if inst, ok := s.lanes[lc.Name]; ok {
-			st := inst.lane.Stats()
-			ls.Healthy = st.Healthy.Load()
-			ls.BindMode = bindModeStr(st.BindMode.Load())
-			ls.LastErr = st.GetLastErr()
-			ls.ConnsTotal = st.ConnsTotal.Load()
-			ls.ConnsActive = st.ConnsActive.Load()
-			ls.Rejects = st.RejectsTotal.Load()
-			ls.BytesUp = st.BytesUp.Load()
-			ls.BytesDown = st.BytesDown.Load()
-			ls.DNSQueries = st.DNSQueries.Load()
-			ls.UDPRelays = st.UDPRelays.Load()
+			switch {
+			case inst.sel != nil:
+				healthy, mode, lastErr := inst.sel.Current()
+				ls.Healthy = healthy
+				ls.BindMode = bindModeStr(mode)
+				ls.LastErr = lastErr
+				n := inst.sel.Counts()
+				ls.ConnsTotal = n.ConnsTotal
+				ls.ConnsActive = n.ConnsActive
+				ls.Rejects = n.Rejects
+				ls.BytesUp = n.BytesUp
+				ls.BytesDown = n.BytesDown
+				ls.DNSQueries = n.DNSQueries
+				ls.UDPRelays = n.UDPRelays
+				ls.Candidates = inst.sel.Candidates()
+			case inst.lane != nil:
+				st := inst.lane.Stats()
+				ls.Healthy = st.Healthy.Load()
+				ls.BindMode = bindModeStr(st.BindMode.Load())
+				ls.LastErr = st.GetLastErr()
+				ls.ConnsTotal = st.ConnsTotal.Load()
+				ls.ConnsActive = st.ConnsActive.Load()
+				ls.Rejects = st.RejectsTotal.Load()
+				ls.BytesUp = st.BytesUp.Load()
+				ls.BytesDown = st.BytesDown.Load()
+				ls.DNSQueries = st.DNSQueries.Load()
+				ls.UDPRelays = st.UDPRelays.Load()
+			}
 		} else {
 			ls.LastErr = "not running"
 		}

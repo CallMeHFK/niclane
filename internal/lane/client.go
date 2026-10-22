@@ -88,7 +88,7 @@ func socks5ClientHandshake(conn net.Conn, target string, userinfo *url.Userinfo)
 		return fmt.Errorf("unexpected upstream reply version %#x", head[0])
 	}
 	if head[1] != 0x00 {
-		return fmt.Errorf("upstream connect failed, socks reply %#x", head[1])
+		return &UpstreamRejectError{Reason: fmt.Sprintf("socks5 connect reply %#x", head[1])}
 	}
 	switch head[3] {
 	case 0x01:
@@ -163,7 +163,7 @@ func httpConnectHandshake(ctx context.Context, conn net.Conn, target string, use
 	}
 	// "HTTP/1.1 200 ..." — status code at offset 9..12.
 	if status[9:12] != "200" {
-		return fmt.Errorf("upstream CONNECT failed: %q", truncate(firstLine(status), 120))
+		return &UpstreamRejectError{Reason: fmt.Sprintf("CONNECT %s: %s", target, truncate(firstLine(status), 120))}
 	}
 	return nil
 }

@@ -55,6 +55,68 @@ func (t *trackedConn) Close() error {
 // silently routed through another interface.
 var ErrFailClosed = errors.New("lane unhealthy (fail-closed)")
 
+// ErrUpstreamReject marks an application-level refusal from the upstream
+// proxy (CONNECT non-2xx, SOCKS5 reply != success). Selection providers must
+// not treat it as a dead candidate: the target, not the egress, was refused.
+var ErrUpstreamReject = errors.New("upstream rejected the request")
+
+// UpstreamRejectError carries the proxy's reason and unwraps to
+// ErrUpstreamReject.
+type UpstreamRejectError struct {
+	Reason string
+}
+
+func (e *UpstreamRejectError) Error() string { return "upstream rejected: " + e.Reason }
+
+// Unwrap lets errors.Is(err, ErrUpstreamReject) match.
+func (e *UpstreamRejectError) Unwrap() error { return ErrUpstreamReject }
+
+// Provider hands out a pinned egress for one client connection. A single
+// Lane is its own provider; a selector chooses among several child lanes.
+type Provider interface {
+	// Acquire returns an egress pinned for the lifetime of one connection.
+	Acquire(ctx context.Context) (Egress, error)
+	// ReportFailure records a transport-level dial failure so a selection
+	// provider can demote the candidate and re-probe it out of band.
+	ReportFailure(eg Egress, err error)
+	Reject(reason string)
+	Stats() *metrics.Stats
+	Name() string
+}
+
+// Acquire makes a lane its own provider.
+func (l *Lane) Acquire(context.Context) (Egress, error) { return l, nil }
+
+// ReportFailure is a no-op for a single lane: its own health snapshot already
+// covers the interface state.
+func (l *Lane) ReportFailure(Egress, error) {}
+
+// Dial acquires a pinned egress from p and dials address through it, trying
+// up to three candidates on transport failures. An application-level
+// rejection is returned immediately: switching candidates cannot fix it.
+func Dial(ctx context.Context, p Provider, network, address string) (net.Conn, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		eg, err := p.Acquire(ctx)
+		if err != nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, err
+		}
+		conn, err := eg.DialContext(ctx, network, address)
+		if err == nil {
+			return conn, nil
+		}
+		if errors.Is(err, ErrUpstreamReject) {
+			return nil, err
+		}
+		p.ReportFailure(eg, err)
+		lastErr = err
+	}
+	return nil, lastErr
+}
+
 // Bind-mode gauge values exposed via metrics.
 const (
 	BindModeNone   int64 = 0

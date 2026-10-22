@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"time"
 
@@ -20,31 +22,132 @@ const (
 	DNSLane   = "lane" // resolve through the lane's own interface
 	DNSSystem = "system"
 	DNSDoH    = "doh" // DNS-over-HTTPS through the lane
+
+	// StaticCandidatePriority is the default priority of a candidate listed
+	// in the config; auto-discovered candidates sort after them.
+	StaticCandidatePriority     = 1000
+	DiscoveredCandidatePriority = 100
+
+	DefaultProbeURL      = "https://www.gstatic.com/generate_204"
+	DefaultProbeInterval = 10 * time.Second
 )
+
+// DefaultDiscoveryPorts are the proxy ports probed on a tether gateway when
+// neither the lane nor the global discovery block lists any.
+var DefaultDiscoveryPorts = []int{10808, 10809, 7890, 7891}
 
 // Config is the top-level configuration file.
 type Config struct {
-	Admin    string        `yaml:"admin"`
-	LogLevel string        `yaml:"log_level"`
-	Lanes    []*LaneConfig `yaml:"lanes"`
+	Admin     string           `yaml:"admin"`
+	LogLevel  string           `yaml:"log_level"`
+	Discovery *DiscoveryConfig `yaml:"discovery"`
+	Lanes     []*LaneConfig    `yaml:"lanes"`
+}
+
+// DiscoveryConfig holds global defaults shared by every lane's discover block.
+type DiscoveryConfig struct {
+	Ports []int `yaml:"ports"`
+}
+
+// CandidateConfig is one statically configured egress candidate.
+type CandidateConfig struct {
+	Interface string `yaml:"interface"`
+	Upstream  string `yaml:"upstream"`
+	Priority  *int   `yaml:"priority"`
+}
+
+// DiscoverConfig enables automatic candidate discovery on a lane.
+type DiscoverConfig struct {
+	Interfaces []string          `yaml:"interfaces"`
+	Ports      []int             `yaml:"ports"`
+	Via        map[string]string `yaml:"via"`
+	ProbeURL   string            `yaml:"probe_url"`
+	Interval   string            `yaml:"interval"`
 }
 
 // LaneConfig describes one proxy lane: a local listener whose egress is
 // pinned to one network interface.
 type LaneConfig struct {
-	Name        string      `yaml:"name"`
-	Listen      string      `yaml:"listen"`
-	Type        string      `yaml:"type"`
-	Interface   string      `yaml:"interface"`
-	BindIP      string      `yaml:"bind_ip"`
-	BindMode    string      `yaml:"bind_mode"`
-	Strict      *bool       `yaml:"strict"`
-	Auth        *AuthConfig `yaml:"auth"`
-	Upstream    string      `yaml:"upstream"`
-	DNS         string      `yaml:"dns"`
-	DNSServers  []string    `yaml:"dns_servers"`
-	DohURLs     []string    `yaml:"doh"`
-	IdleTimeout string      `yaml:"idle_timeout"`
+	Name        string             `yaml:"name"`
+	Listen      string             `yaml:"listen"`
+	Type        string             `yaml:"type"`
+	Interface   string             `yaml:"interface"`
+	BindIP      string             `yaml:"bind_ip"`
+	BindMode    string             `yaml:"bind_mode"`
+	Strict      *bool              `yaml:"strict"`
+	Auth        *AuthConfig        `yaml:"auth"`
+	Upstream    string             `yaml:"upstream"`
+	Candidates  []*CandidateConfig `yaml:"candidates"`
+	Discover    *DiscoverConfig    `yaml:"discover"`
+	DNS         string             `yaml:"dns"`
+	DNSServers  []string           `yaml:"dns_servers"`
+	DohURLs     []string           `yaml:"doh"`
+	IdleTimeout string             `yaml:"idle_timeout"`
+}
+
+// HasCandidates reports whether the lane runs in candidate mode.
+func (c *LaneConfig) HasCandidates() bool {
+	return len(c.Candidates) > 0 || c.Discover != nil
+}
+
+// EffectivePriority returns the candidate priority, defaulting to the static
+// default.
+func (c *CandidateConfig) EffectivePriority() int {
+	if c.Priority == nil {
+		return StaticCandidatePriority
+	}
+	return *c.Priority
+}
+
+// EffectiveInterfaces returns the interface selectors, defaulting to device.
+func (d *DiscoverConfig) EffectiveInterfaces() []string {
+	if d == nil || len(d.Interfaces) == 0 {
+		return []string{"device"}
+	}
+	return d.Interfaces
+}
+
+// EffectiveProbeURL returns probe_url or the default.
+func (d *DiscoverConfig) EffectiveProbeURL() string {
+	if d == nil || d.ProbeURL == "" {
+		return DefaultProbeURL
+	}
+	return d.ProbeURL
+}
+
+// EffectiveInterval returns the probe/discovery period, defaulting to 10s.
+func (d *DiscoverConfig) EffectiveInterval() (time.Duration, error) {
+	if d == nil || d.Interval == "" {
+		return DefaultProbeInterval, nil
+	}
+	dur, err := time.ParseDuration(d.Interval)
+	if err != nil || dur < 2*time.Second {
+		return 0, fmt.Errorf("discover: interval %q must be a duration of at least 2s", d.Interval)
+	}
+	return dur, nil
+}
+
+// EffectivePorts returns lane ports when set, else global ports, else the
+// built-in defaults. The returned slice is deduped and never aliases config.
+func (d *DiscoverConfig) EffectivePorts(global *DiscoveryConfig) []int {
+	var ports []int
+	switch {
+	case d != nil && len(d.Ports) > 0:
+		ports = d.Ports
+	case global != nil && len(global.Ports) > 0:
+		ports = global.Ports
+	default:
+		ports = DefaultDiscoveryPorts
+	}
+	seen := make(map[int]bool, len(ports))
+	out := make([]int, 0, len(ports))
+	for _, p := range ports {
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // AuthConfig is the SOCKS5 username/password auth for inbound clients.
@@ -128,6 +231,11 @@ func (c *Config) Validate() error {
 	if c.LogLevel == "" {
 		c.LogLevel = "info"
 	}
+	if c.Discovery != nil {
+		if err := validatePorts("discovery", c.Discovery.Ports); err != nil {
+			return err
+		}
+	}
 	seenName := map[string]bool{}
 	seenListen := map[string]bool{}
 	for i, ln := range c.Lanes {
@@ -189,8 +297,82 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("lane %q: upstream must be socks5:// or http://", ln.Name)
 			}
 		}
+		if ln.HasCandidates() {
+			if ln.Interface != "" || ln.Upstream != "" {
+				return fmt.Errorf("lane %q: interface/upstream cannot be combined with candidates or discover", ln.Name)
+			}
+			seenCand := map[string]bool{}
+			for j, cand := range ln.Candidates {
+				if cand == nil {
+					return fmt.Errorf("lane %q: candidates[%d]: empty candidate", ln.Name, j)
+				}
+				if cand.Interface == "" && cand.Upstream == "" {
+					return fmt.Errorf("lane %q: candidates[%d]: interface or upstream is required", ln.Name, j)
+				}
+				if cand.Upstream != "" {
+					switch schemeOf(cand.Upstream) {
+					case "socks5", "http":
+					default:
+						return fmt.Errorf("lane %q: candidates[%d]: upstream must be socks5:// or http://", ln.Name, j)
+					}
+				}
+				key := cand.Interface + "\x00" + cand.Upstream
+				if seenCand[key] {
+					return fmt.Errorf("lane %q: candidates[%d]: duplicate candidate %s %s", ln.Name, j, cand.Interface, cand.Upstream)
+				}
+				seenCand[key] = true
+			}
+			if ln.Discover != nil {
+				if _, err := ln.Discover.EffectiveInterval(); err != nil {
+					return fmt.Errorf("lane %q: %w", ln.Name, err)
+				}
+				if err := validatePorts(fmt.Sprintf("lane %q discover", ln.Name), ln.Discover.EffectivePorts(c.Discovery)); err != nil {
+					return err
+				}
+				for ifName, gw := range ln.Discover.Via {
+					if ifName == "" {
+						return fmt.Errorf("lane %q: discover.via: empty interface name", ln.Name)
+					}
+					if net.ParseIP(gw) == nil {
+						return fmt.Errorf("lane %q: discover.via[%s]: %q is not an IP address", ln.Name, ifName, gw)
+					}
+				}
+				for _, spec := range ln.Discover.Interfaces {
+					if spec == "" {
+						return fmt.Errorf("lane %q: discover.interfaces contains an empty entry", ln.Name)
+					}
+				}
+				if err := validateProbeURL(ln.Discover.EffectiveProbeURL()); err != nil {
+					return fmt.Errorf("lane %q: %w", ln.Name, err)
+				}
+			}
+		}
 		if _, err := ln.IdleTimeoutDur(); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func validatePorts(what string, ports []int) error {
+	for _, p := range ports {
+		if p < 1 || p > 65535 {
+			return fmt.Errorf("%s: port %d out of range 1..65535", what, p)
+		}
+	}
+	return nil
+}
+
+// validateProbeURL keeps the probe target out of local/management address
+// space so a misconfigured discovery rule cannot poke the host itself.
+func validateProbeURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+		return fmt.Errorf("discover: probe_url %q must be an absolute http(s) URL", raw)
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil {
+		if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
+			return fmt.Errorf("discover: probe_url host %q is not allowed", u.Hostname())
 		}
 	}
 	return nil

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.0 — unreleased
+
+- **Candidate lanes (automatic failover)**: a lane can hold an ordered set of
+  `(interface, upstream)` candidates instead of one fixed NIC. Each client
+  connection is pinned to one candidate for resolve+dial+UDP; ordering is
+  priority → probe delay → config order. Every candidate is health-probed
+  through its own interface (2 consecutive failures = dead, 1 success =
+  recovered); with `strict: true` the lane fails closed when none is healthy.
+- **Failure taxonomy**: only transport failures (dial errors, timeouts,
+  handshake IO, fail-closed refusals) trigger failover. Application-level
+  upstream rejections (SOCKS5 reply ≠ 0, HTTP CONNECT non-2xx) are returned to
+  the client and never penalise candidate health.
+- **Auto-discovery (Linux)**: `discover:` enumerates selected interfaces,
+  resolves each interface's *own* gateway (`via` override →
+  `/proc/net/route` → systemd-networkd lease → `nmcli`) and TCP-checks the
+  configured proxy ports on that gateway only — no subnet scans, no global
+  default route, no vendor/MAC assumptions. Discovered candidates rank below
+  static ones (100 vs 1000) and vanish when the port stops answering.
+- **Maintainable port lists**: global `discovery.ports` (default
+  `[10808, 10809, 7890, 7891]`) plus per-lane `discover.ports` overrides,
+  deduplicated. Changing the global list on SIGHUP restarts only lanes with a
+  `discover:` block.
+- **CLI**: `niclane discover` shows the current scan (interface, upstream,
+  source, health, delay); `niclane test` and `niclane status` gain
+  candidate-aware output; `/status` exposes per-candidate state under
+  `candidates`.
+- Legacy single-interface lanes are unchanged; combining `interface`/
+  `upstream` with `candidates`/`discover` is rejected by validation.
+
 ## 0.3.2 — 2026-10-07
 
 - **Agent skill ships with every release**: `skills/niclane/SKILL.md` (the

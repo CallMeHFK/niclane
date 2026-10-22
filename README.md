@@ -68,12 +68,95 @@ lane-bound UDP socket.
 - Per-lane DNS with anti-leak defaults: lane resolver, DNS-over-HTTPS
   (`dns: doh`), or system; configurable `dns_servers` / `doh`
 - Upstream chaining (socks5/http), dialed through the lane
+- Candidate sets with per-connection pinning and automatic failover on
+  transport errors; fail-closed when none is healthy
+- Auto-discovery of proxy endpoints on device gateways (Linux), with
+  user-maintainable port lists
 - `niclane doctor` — interfaces, capability probe, suggested config
 - `niclane test` — verify each lane's real exit IP
+- `niclane discover` — show what auto-discovery sees right now
 - `niclane status` + `/metrics` Prometheus endpoint
 - `niclane bench` — per-lane throughput measurement and comparison
 - SIGHUP hot-reload: add/remove/change lanes without restarting
 - Single static binary, no runtime dependencies
+
+## Automatic failover across devices (candidates + discovery)
+
+A lane does not have to be bound to one fixed NIC. Give it `candidates:` —
+each an `(interface, upstream)` pair — and niclane probes them, pins every
+client connection to one healthy candidate, and fails over on transport
+errors:
+
+```yaml
+lanes:
+  - name: phone
+    listen: 127.0.0.1:7893
+    type: socks5
+    candidates:
+      - { interface: enx020000000001, upstream: "http://198.51.100.10:10808" }
+      - { interface: enx020000000003, upstream: "http://198.51.100.20:10808", priority: 500 }
+    discover:
+      interfaces: ["device"]        # default: physical-ish NICs, minus lo
+      ports: [10808, 10809]         # optional per-lane override
+      interval: 10s
+      probe_url: https://www.gstatic.com/generate_204
+```
+
+How it behaves:
+
+- **Per-connection pinning.** Resolve, dial and UDP relay all use the same
+  candidate, so DNS answers and payload cannot leave through different NICs
+  within one connection.
+- **Health is real egress.** Every candidate fetches `probe_url` through its
+  own NIC (TLS for `https`); any 2xx is healthy, 2 consecutive failures mark
+  it dead, one success brings it back. Preference is `priority` (higher
+  first, default `1000`), then lowest probe delay, then config order.
+- **Failover is for transport failures only**: dial errors, timeouts,
+  handshake IO, fail-closed refusals. If the *upstream proxy* answers with an
+  application-level rejection (SOCKS5 reply ≠ 0, HTTP CONNECT non-2xx), the
+  client gets that rejection — niclane does not silently switch exits and
+  does not penalise the candidate's health.
+- **Fail-closed at the lane level.** With `strict: true` (default), once no
+  candidate is healthy, connections are rejected instead of leaking through
+  the host's default route.
+
+### Auto-discovery (Linux)
+
+`discover:` makes the candidate list self-maintaining. Each pass enumerates
+the selected interfaces, resolves **each interface's own DHCP gateway**, and
+TCP-checks the configured proxy ports on that gateway only:
+
+- It never scans a subnet and never uses the global default route. Ports come
+  from `discovery.ports` (global default `[10808, 10809, 7890, 7891]`) plus
+  the lane's optional `discover.ports` — extend them for your device's proxy.
+- Gateway lookup order: `via:` override → `/proc/net/route` →
+  systemd-networkd lease → `nmcli`. Discovery is Linux-only; on other
+  platforms a `discover:` lane simply keeps its static candidates.
+- Discovered candidates enter at priority `100`, below static candidates'
+  default `1000`, so an explicitly configured device wins. They disappear
+  automatically when the device's proxy port stops answering.
+- `niclane discover -c niclane.yaml` prints the current scan: interface,
+  upstream, source, health and probe delay.
+- Without a vendor or MAC assumption, discovery matches any device whose
+  gateway exposes a configured port. To pin it to a class of interfaces use
+  a glob, and override a gateway when DHCP cannot be read:
+
+```yaml
+lanes:
+  - name: uplink
+    listen: 127.0.0.1:7890
+    discover:
+      interfaces: ["enx*"]          # glob, "device", or "any"; lo is excluded
+      ports: [10808, 7890]
+      via:                          # optional static gateway override
+        enx020000000001: 198.51.100.10
+```
+
+Editing a lane's `candidates`/`discover` restarts that lane on SIGHUP
+(existing connections are cut, as with any lane config change). Changing the
+global `discovery.ports` restarts only lanes that have a `discover:` block;
+runtime changes in the discovered set (a device coming or going) never
+restart anything.
 
 ## Quick start
 
@@ -155,12 +238,21 @@ fastest lane by downstream: dock (3057.1 MB/s)
 | `name` | required | unique lane name (metrics label) |
 | `listen` | required | local `host:port` for the proxy listener |
 | `type` | `socks5` | `socks5` or `http` |
-| `interface` | — | pin egress to this NIC (mutually exclusive with `bind_ip`) |
+| `interface` | — | pin egress to this NIC (mutually exclusive with `bind_ip`, `candidates`, `discover`) |
 | `bind_ip` | — | pin egress by source address (weaker) |
 | `bind_mode` | `auto` | `device`, `ip`, or `auto` (device if possible, else ip) |
 | `strict` | `true` | fail-closed: reject while the interface is down/unaddressed |
 | `auth` | — | SOCKS5 `user`/`password` for inbound clients |
 | `upstream` | — | chain through `socks5://[user:pass@]host:port` or `http://…` (dialed via the lane) |
+| `candidates` | — | ordered fallback set of `{interface, upstream, priority}` entries; replaces `interface`+`upstream` |
+| `candidates[].priority` | `1000` | higher wins; ties go to the lowest probe delay, then config order |
+| `discover` | — | auto-add candidates from device gateways (Linux); replacing `interface`+`upstream` |
+| `discover.interfaces` | `["device"]` | interface names, globs, `device`, or `any`; `lo` is always excluded |
+| `discover.ports` | global `discovery.ports` | proxy ports to TCP-check on each gateway |
+| `discover.via` | — | `interface: gateway` overrides when DHCP cannot be read |
+| `discover.probe_url` | Google `generate_204` | health probe URL (`http`/`https`, non-loopback) |
+| `discover.interval` | `10s` | probe + rediscovery interval (minimum `2s`) |
+| `discovery.ports` | `[10808, 10809, 7890, 7891]` | global: default proxy ports for every `discover` lane |
 | `dns` | `lane` | `lane` (resolve through the NIC), `doh` (DNS-over-HTTPS via the lane), or `system` |
 | `dns_servers` | `223.5.5.5` | substitutes for loopback NS in lane-DNS mode |
 | `doh` | AliDNS + Cloudflare | DoH JSON-API base URLs for `dns: doh`; IP-literal `https://` URLs recommended (no bootstrap needed) |

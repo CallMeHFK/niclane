@@ -67,6 +67,42 @@ lane's NIC goes down, connections are rejected, never silently rerouted.
 | Deliberately ride a TUN-mode proxy (mihomo/sing-box) | `interface: <tun device>` |
 | Chain to another proxy (e.g. SocksBypass on a phone over its hotspot NIC) | `interface: <hotspot nic>` + `upstream: socks5://<phone>:9876` |
 
+## Failover lanes (candidates + discovery)
+
+When the user wants "use whatever device has internet, fall back to another",
+do not hand-build watch scripts: use a candidate lane.
+
+```yaml
+lanes:
+  - name: phone
+    listen: 127.0.0.1:7893
+    candidates:
+      - { interface: enx020000000001, upstream: "http://198.51.100.10:10808" }
+      - { interface: enx020000000003, upstream: "http://198.51.100.20:10808", priority: 500 }
+    discover:
+      interfaces: ["device"]      # or globs / "any"; lo always excluded
+      ports: [10808, 10809]       # per-lane override of discovery.ports
+```
+
+Rules of the model:
+
+- One candidate is pinned per client connection (resolve + dial + UDP).
+  Preference: priority (default 1000) → probe delay → config order.
+- Health is a real fetch of `probe_url` through each candidate's own NIC;
+  2 failures = dead, 1 success = recovered.
+- Only transport failures fail over. An upstream SOCKS5 reply ≠ 0 or HTTP
+  CONNECT non-2xx is the app's answer — do not retry around it.
+- `strict: true` still means fail-closed when no candidate is healthy.
+- Discovery is Linux-only, per-interface gateway, configured ports only — it
+  never scans subnets. Extend `discovery.ports` / `discover.ports` when the
+  device's proxy listens elsewhere; check with `niclane discover -c …`.
+- Static candidates outrank discovered ones (1000 vs 100). Adding/changing
+  candidates or discovery restarts that lane on SIGHUP; devices coming and
+  going do not.
+- Discovery assumes the phone's USB/LAN gateway runs the proxy. If the user's
+  topology differs (proxy on a host inside the LAN), use an explicit static
+  candidate, or `discover.via` to point the interface at the right gateway.
+
 ## Troubleshooting
 
 - **Dial fails with EPERM / device binding unavailable** → `setcap` (above)
@@ -90,6 +126,16 @@ lane's NIC goes down, connections are rejected, never silently rerouted.
 - **`bind_mode: source-ip` in /status when you expected device** → capability
   missing or `bind_ip` used; source-IP mode is best-effort (asymmetric
   routing possible).
+- **Candidate lane rejects everything** → inspect `candidates` in
+  `niclane status` / `/status`: all `healthy:false` means every probe failed.
+  Check `last_error`, the upstream process on the device, and that each
+  candidate's interface exists (`ip link`). Do not "fix" it by setting
+  `strict: false`.
+- **`niclane discover` finds nothing** → the proxy port is not in
+  `discovery.ports`/`discover.ports`, the device proxy is not running, or the
+  gateway does not expose it (host firewall / proxy bound to another IP).
+  Add the port first; use `discover.via` only when the gateway is genuinely
+  not readable from DHCP.
 
 ## Benchmarks
 
@@ -105,7 +151,9 @@ niclane bench -c niclane.yaml -target <peer>:9999 -duration 10s
 
 - Never promise per-NIC isolation for `bind_ip` lanes — device mode only.
 - Never route around a fail-closed rejection (e.g. by dropping `strict` or
-  adding fallback lanes) without saying so explicitly.
+  adding fallback lanes) without saying so explicitly. Candidate failover is
+  the sanctioned exception: it stays inside the lane and still fails closed
+  when every candidate is dead.
 - Do not put two lanes on the same `listen` port; validation rejects the
   whole config on reload.
 

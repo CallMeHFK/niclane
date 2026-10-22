@@ -60,12 +60,81 @@ VPN/TUN 虚拟网卡、Tailscale、Docker 网桥……全部共存于一张路�
 - 每车道独立 DNS，默认防泄漏：车道解析器 / DNS-over-HTTPS（`dns: doh`）/
   系统解析；`dns_servers` / `doh` 可配置
 - 上游链（socks5/http），从车道内拨出
+- 候选集：逐连接钉住一个候选，传输层失败自动回退；全部不健康时 fail-closed
+- 自动发现设备网关上的代理端点（Linux），端口表可由用户维护
 - `niclane doctor` —— 网卡清单、能力探测、配置建议
 - `niclane test` —— 验证每条车道的真实出口 IP
+- `niclane discover` —— 查看自动发现当前看到什么
 - `niclane status` + `/metrics` Prometheus 端点
 - `niclane bench` —— 按车道吞吐测量与对比
 - SIGHUP 热重载：不重启进程增删改车道
 - 单一静态二进制，零运行时依赖
+
+## 跨设备自动回退（candidates + discover）
+
+车道不必钉死在一张网卡上。给车道写 `candidates:`——每一项是一个
+`(interface, upstream)` 组合——niclane 会探测它们，把每个客户端连接钉在
+一个健康候选上，并在传输层失败时回退：
+
+```yaml
+lanes:
+  - name: phone
+    listen: 127.0.0.1:7893
+    type: socks5
+    candidates:
+      - { interface: enx020000000001, upstream: "http://198.51.100.10:10808" }
+      - { interface: enx020000000003, upstream: "http://198.51.100.20:10808", priority: 500 }
+    discover:
+      interfaces: ["device"]        # 默认：类物理网卡，排除 lo
+      ports: [10808, 10809]         # 可选：覆盖全局端口表
+      interval: 10s
+      probe_url: https://www.gstatic.com/generate_204
+```
+
+行为语义：
+
+- **逐连接钉住。** 解析、拨号和 UDP 中继都使用同一个候选，DNS 结果与数据
+  不会在同一条连接里从不同网卡出去。
+- **健康 = 真实出口。** 每个候选经自己的网卡请求 `probe_url`（`https` 走
+  TLS），任意 2xx 即健康；连续 2 次失败判死，1 次成功即恢复。排序为
+  `priority`（大者优先，默认 `1000`）→ 探测延迟低者 → 配置顺序。
+- **只有传输层失败才回退**：拨号错误、超时、握手 IO、fail-closed 拒绝。
+  若*上游代理*返回应用层拒绝（SOCKS5 reply ≠ 0、HTTP CONNECT 非 2xx），
+  客户端直接收到该拒绝——niclane 不会偷偷换出口，也不会计入候选健康。
+- **车道级 fail-closed。** `strict: true`（默认）下，一旦没有健康候选，
+  连接被拒绝，而不是漏到系统默认路由。
+
+### 自动发现（Linux）
+
+`discover:` 让候选表自行维护。每一轮枚举选中的网卡，解析**每张网卡自己的
+DHCP 网关**，只在这个网关上 TCP 探测配置的代理端口：
+
+- 从不扫网段，也从不使用全局默认路由。端口来自 `discovery.ports`（全局
+  默认 `[10808, 10809, 7890, 7891]`）加车道可选的 `discover.ports`——按你的
+  设备代理端口自行增减。
+- 网关查找顺序：`via:` 覆盖 → `/proc/net/route` → systemd-networkd 租约 →
+  `nmcli`。发现仅支持 Linux；其他平台上 `discover:` 车道只保留静态候选。
+- 发现的候选以 priority `100` 加入，低于静态候选默认的 `1000`，显式配置的
+  设备优先。设备代理端口不再应答时，对应候选自动移除。
+- `niclane discover -c niclane.yaml` 打印当前扫描结果：网卡、上游、来源、
+  健康、探测延迟。
+- 不绑定厂商或 MAC：任何网关上开有配置端口的设备都会被采纳。想限定某类
+  网卡名用 glob；读不到 DHCP 网关时用 `via` 覆盖：
+
+```yaml
+lanes:
+  - name: uplink
+    listen: 127.0.0.1:7890
+    discover:
+      interfaces: ["enx*"]          # glob、"device" 或 "any"；lo 永远排除
+      ports: [10808, 7890]
+      via:                          # 可选：静态网关覆盖
+        enx020000000001: 198.51.100.10
+```
+
+SIGHUP 修改某车道的 `candidates`/`discover` 会重启该车道（现有连接被切断，
+与其他车道配置变更一致）。修改全局 `discovery.ports` 只重启带 `discover:`
+的车道；运行中"设备来/走"引起的发现集变化不会重启任何东西。
 
 ## 快速开始
 
@@ -145,12 +214,21 @@ fastest lane by downstream: dock (3057.1 MB/s)
 | `name` | 必填 | 车道名（唯一，作 metrics 标签） |
 | `listen` | 必填 | 本地代理监听 `host:port` |
 | `type` | `socks5` | `socks5` 或 `http` |
-| `interface` | — | 出口钉到此网卡（与 `bind_ip` 互斥） |
+| `interface` | — | 出口钉到此网卡（与 `bind_ip`、`candidates`、`discover` 互斥） |
 | `bind_ip` | — | 按源地址钉出口（较弱） |
 | `bind_mode` | `auto` | `device` / `ip` / `auto`（尽量 device，否则 ip） |
 | `strict` | `true` | fail-closed：网卡掉线/无地址时拒绝连接 |
 | `auth` | — | SOCKS5 入站 `user`/`password` |
 | `upstream` | — | 经 `socks5://[user:pass@]host:port` 或 `http://…` 链式上游（从车道内拨出） |
+| `candidates` | — | 有序回退集，每项 `{interface, upstream, priority}`；替代 `interface`+`upstream` |
+| `candidates[].priority` | `1000` | 大者优先；同优先级比探测延迟，再比配置顺序 |
+| `discover` | — | 从设备网关自动补充候选（Linux）；替代 `interface`+`upstream` |
+| `discover.interfaces` | `["device"]` | 网卡名、glob、`device` 或 `any`；`lo` 永远排除 |
+| `discover.ports` | 全局 `discovery.ports` | 在网关上 TCP 探测的代理端口 |
+| `discover.via` | — | `网卡: 网关` 覆盖（读不到 DHCP 时用） |
+| `discover.probe_url` | Google `generate_204` | 健康探测 URL（`http`/`https`，非回环） |
+| `discover.interval` | `10s` | 探测 + 重发现间隔（最小 `2s`） |
+| `discovery.ports` | `[10808, 10809, 7890, 7891]` | 全局：所有 `discover` 车道的默认代理端口 |
 | `dns` | `lane` | `lane`（经本车道解析）、`doh`（DNS-over-HTTPS 经车道）或 `system` |
 | `dns_servers` | `223.5.5.5` | lane-DNS 模式下替换回环 NS 的解析器 |
 | `doh` | 阿里 DNS + Cloudflare | `dns: doh` 的 DoH JSON-API 基础 URL；建议用 IP 字面量 `https://`（无需引导解析） |

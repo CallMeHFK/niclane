@@ -9,6 +9,12 @@ admin: 127.0.0.1:9000
 # debug | info | warn | error
 log_level: info
 
+# Proxy ports auto-discovery TCP-checks on each device's own gateway. Extend
+# this for your hardware (common: 10808/10809 V2rayNG, 7890/7891 Clash).
+# A lane can override it with `discover.ports`. Linux-only feature.
+# discovery:
+#   ports: [10808, 10809, 7890, 7891]
+
 lanes:
   # --- WiFi NIC -------------------------------------------------------------
   - name: wifi
@@ -47,3 +53,23 @@ lanes:
   # - name: by-ip
   #   listen: 127.0.0.1:7895
   #   bind_ip: 198.51.100.100
+
+  # --- Failover lane: static candidates + auto-discovery ---------------------
+  # The lane probes each candidate through its own NIC, pins every client
+  # connection to one healthy candidate, and fails over on transport errors.
+  # `discover` adds candidates from any device whose gateway answers on one of
+  # the proxy ports (Linux-only, never scans subnets). Discovered entries rank
+  # below static ones (priority 100 vs 1000).
+  # - name: phone
+  #   listen: 127.0.0.1:7893
+  #   type: socks5
+  #   candidates:
+  #     - { interface: enx020000000001, upstream: "http://198.51.100.10:10808" }
+  #     - { interface: enx020000000003, upstream: "http://198.51.100.20:10808", priority: 500 }
+  #   discover:
+  #     interfaces: ["device"]      # names, globs, "device", or "any"; lo excluded
+  #     ports: [10808, 10809]       # optional per-lane override
+  #     interval: 10s
+  #     probe_url: https://www.gstatic.com/generate_204
+  #     # via:                      # gateway overrides when DHCP cannot be read
+  #     #   enx020000000001: 198.51.100.10

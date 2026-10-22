@@ -103,11 +103,12 @@ type Selector struct {
 	parent   *config.LaneConfig
 	global   *config.DiscoveryConfig
 
-	mu      sync.RWMutex
-	cands   []*candidate
-	byKey   map[string]*candidate
-	active  *candidate
-	lastErr string
+	mu       sync.RWMutex
+	cands    []*candidate
+	byKey    map[string]*candidate
+	active   *candidate
+	lastErr  string
+	lastScan []Discovered
 
 	// discoverFn is replaced in tests; nil means use the real discovery.
 	discoverFn        func(context.Context, *Selector) []Discovered
@@ -355,6 +356,13 @@ func (s *Selector) Active() string {
 		return ""
 	}
 	return s.active.label()
+}
+
+// Discovered returns the endpoints found by the most recent successful scan.
+func (s *Selector) Discovered() []Discovered {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Discovered(nil), s.lastScan...)
 }
 
 // Counts aggregates child counters for the lane-level status.
@@ -607,6 +615,7 @@ func (s *Selector) syncDiscovered(ctx context.Context) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.lastScan = append(s.lastScan[:0], found...)
 	kept := s.cands[:0]
 	for _, c := range s.cands {
 		if c.source == "discovered" && !want[candidateKey(c.iface, c.upstream)] {

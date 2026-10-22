@@ -260,8 +260,7 @@ func cmdDiscover(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("%-14s %-18s %-26s %-10s %-7s %-7s %s\n", "LANE", "INTERFACE", "UPSTREAM", "SOURCE", "HEALTHY", "DELAY", "ERROR")
-	var scanned, discovered int
+	var lanes []*config.LaneConfig
 	for _, lc := range cfg.Lanes {
 		if *only != "" && lc.Name != *only {
 			continue
@@ -272,7 +271,18 @@ func cmdDiscover(args []string) error {
 			}
 			continue
 		}
-		scanned++
+		lanes = append(lanes, lc)
+	}
+	if len(lanes) == 0 {
+		if *only != "" {
+			return fmt.Errorf("lane %q not found", *only)
+		}
+		return errors.New("no lanes with discover configured")
+	}
+
+	fmt.Printf("%-14s %-18s %-26s %-10s %-7s %-7s %s\n", "LANE", "INTERFACE", "UPSTREAM", "SOURCE", "HEALTHY", "DELAY", "ERROR")
+	var discovered, scanTotal int
+	for _, lc := range lanes {
 		// Probe URL and interval live in the discover block; the child lanes
 		// use the same security settings as the parent lane.
 		sel, err := selector.New(lc, cfg.Discovery, newLogger("error"), metrics.NewRegistry().Register(lc.Name))
@@ -280,9 +290,11 @@ func cmdDiscover(args []string) error {
 			return err
 		}
 		sel.Refresh(context.Background())
+		laneDiscovered := 0
 		for _, c := range sel.Candidates() {
 			if c.Source == "discovered" {
 				discovered++
+				laneDiscovered++
 			}
 			delay := "-"
 			if c.DelayMS > 0 {
@@ -290,14 +302,14 @@ func cmdDiscover(args []string) error {
 			}
 			fmt.Printf("%-14s %-18s %-26s %-10s %-7v %-7s %s\n", lc.Name, c.Interface, c.Upstream, c.Source, c.Healthy, delay, c.LastError)
 		}
-	}
-	if scanned == 0 {
-		if *only != "" {
-			return fmt.Errorf("lane %q not found", *only)
+		if scan := sel.Discovered(); len(scan) > 0 {
+			scanTotal += len(scan)
+			if laneDiscovered == 0 {
+				fmt.Printf("%-14s scan found %d endpoint(s); all are already static candidates\n", "", len(scan))
+			}
 		}
-		return errors.New("no lanes with discover configured")
 	}
-	if discovered == 0 {
+	if scanTotal == 0 {
 		fmt.Println("\nno proxy port answered; extend discovery.ports if your device uses a different port")
 	}
 	return nil

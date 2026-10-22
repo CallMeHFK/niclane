@@ -248,6 +248,9 @@ func TestDiscoveryAddsAndRemovesCandidates(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("candidates = %d, want 3: %+v", len(got), got)
 	}
+	if scan := sel.Discovered(); len(scan) != 2 {
+		t.Fatalf("last scan = %+v, want 2 endpoints", scan)
+	}
 	for _, c := range got {
 		if c.Source == "discovered" && c.Priority != config.DiscoveredCandidatePriority {
 			t.Fatalf("discovered priority = %d, want %d", c.Priority, config.DiscoveredCandidatePriority)

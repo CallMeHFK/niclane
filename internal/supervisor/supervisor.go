@@ -50,11 +50,25 @@ type LaneStatus struct {
 
 type instance struct {
 	cfg      *config.LaneConfig
+	disc     *config.DiscoveryConfig
 	cancel   context.CancelFunc
 	listener net.Listener
 	rt       lane.Provider
 	lane     *lane.Lane
 	sel      *selector.Selector
+}
+
+// discoveryFor returns the global discovery settings a lane actually uses.
+// Lanes without a discover block do not depend on them.
+func discoveryFor(lc *config.LaneConfig, global *config.DiscoveryConfig) *config.DiscoveryConfig {
+	if lc.Discover == nil {
+		return nil
+	}
+	return global
+}
+
+func (i *instance) sameConfig(lc *config.LaneConfig, global *config.DiscoveryConfig) bool {
+	return reflect.DeepEqual(i.cfg, lc) && reflect.DeepEqual(i.disc, discoveryFor(lc, global))
 }
 
 func (i *instance) stop() {
@@ -158,7 +172,7 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 	stopping := make(map[string]*instance)
 	for name, inst := range s.lanes {
 		lc, keep := desired[name]
-		if keep && reflect.DeepEqual(inst.cfg, lc) {
+		if keep && inst.sameConfig(lc, cfg.Discovery) {
 			continue
 		}
 		stopping[name] = inst
@@ -172,7 +186,7 @@ func (s *Supervisor) applyLocked(cfg *config.Config) error {
 	}
 	var fresh []preflighted
 	for name, lc := range desired {
-		if inst, running := s.lanes[name]; running && reflect.DeepEqual(inst.cfg, lc) {
+		if inst, running := s.lanes[name]; running && inst.sameConfig(lc, cfg.Discovery) {
 			continue // unchanged: keep as-is (metrics continuity)
 		}
 		collides := false
@@ -276,7 +290,7 @@ func (s *Supervisor) startLane(lc *config.LaneConfig, ln net.Listener, disc *con
 		go l.Run(ctx)
 	}
 	go serveLane(rt, ln, lc, s.log, ctx)
-	s.lanes[lc.Name] = &instance{cfg: lc, cancel: cancel, listener: ln, rt: rt, lane: l, sel: sel}
+	s.lanes[lc.Name] = &instance{cfg: lc, disc: discoveryFor(lc, disc), cancel: cancel, listener: ln, rt: rt, lane: l, sel: sel}
 	s.log.Info("lane listening", "listen", lc.Listen, "type", lc.TypeOrDefault(),
 		"egress", EgressDesc(lc), "strict", lc.StrictEnabled())
 }

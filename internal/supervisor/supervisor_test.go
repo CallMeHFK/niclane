@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -160,6 +161,7 @@ lanes:
       - upstream: http://127.0.0.1:1
     discover:
       interval: 2s
+      interfaces: ["niclane-test-none*"]
 `
 
 func TestStatusIncludesCandidates(t *testing.T) {
@@ -183,5 +185,63 @@ func TestStatusIncludesCandidates(t *testing.T) {
 	}
 	if len(ls.Candidates) != 1 || ls.Candidates[0].Source != "static" || ls.Candidates[0].Priority != 1000 {
 		t.Fatalf("candidates = %+v", ls.Candidates)
+	}
+}
+
+const cfgDiscoverPorts = `
+admin: 127.0.0.1:18095
+discovery:
+  ports: [10808]
+lanes:
+  - name: d
+    listen: 127.0.0.1:18096
+    discover:
+      interfaces: ["niclane-test-none*"]
+  - name: plain
+    listen: 127.0.0.1:18097
+    bind_ip: 127.0.0.1
+`
+
+func TestReloadAppliesGlobalDiscoveryToDiscoverLanes(t *testing.T) {
+	path := writeCfg(t, cfgDiscoverPorts)
+	sup, err := New(path, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := sup.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer sup.Stop()
+
+	dBefore, pBefore := sup.lanes["d"], sup.lanes["plain"]
+	if dBefore == nil || pBefore == nil {
+		t.Fatalf("lanes missing: %+v", sup.lanes)
+	}
+
+	if err := sup.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if sup.lanes["d"] != dBefore || sup.lanes["plain"] != pBefore {
+		t.Fatal("identical reload churned lanes")
+	}
+
+	updated := strings.Replace(cfgDiscoverPorts, "ports: [10808]", "ports: [10808, 10809]", 1)
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := sup.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if sup.lanes["d"] == dBefore {
+		t.Fatal("discover lane must restart when global discovery settings change")
+	}
+	if sup.lanes["plain"] != pBefore {
+		t.Fatal("lane without discover must not restart on a global discovery change")
+	}
+	got := sup.lanes["d"].disc
+	if got == nil || len(got.Ports) != 2 || got.Ports[1] != 10809 {
+		t.Fatalf("restarted lane has discovery = %+v, want ports [10808 10809]", got)
 	}
 }

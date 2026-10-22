@@ -17,11 +17,11 @@ import (
 	"github.com/CallMeHFK/niclane/internal/relay"
 )
 
-// Handler serves HTTP proxy requests for one lane.
+// Handler serves HTTP proxy requests for one lane provider.
 type Handler struct {
-	Egress lane.Egress
-	Log    *slog.Logger
-	Idle   time.Duration
+	Provider lane.Provider
+	Log      *slog.Logger
+	Idle     time.Duration
 	// Ctx, when set, aborts in-flight tunnels and forwards when the lane is
 	// stopped (config reload / shutdown).
 	Ctx context.Context
@@ -29,12 +29,14 @@ type Handler struct {
 	transport *http.Transport
 }
 
-// NewHandler builds the handler and its lane-bound transport.
-func NewHandler(egress lane.Egress, log *slog.Logger, idle time.Duration, ctx context.Context) *Handler {
-	h := &Handler{Egress: egress, Log: log, Idle: idle, Ctx: ctx}
+// NewHandler builds the handler and its provider-dialed transport.
+func NewHandler(p lane.Provider, log *slog.Logger, idle time.Duration, ctx context.Context) *Handler {
+	h := &Handler{Provider: p, Log: log, Idle: idle, Ctx: ctx}
 	h.transport = &http.Transport{
-		Proxy:               nil, // the lane already applies any upstream
-		DialContext:         egress.DialContext,
+		Proxy: nil, // the lane already applies any upstream
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return lane.Dial(ctx, p, network, address)
+		},
 		ForceAttemptHTTP2:   true,
 		IdleConnTimeout:     90 * time.Second,
 		TLSHandshakeTimeout: 10 * time.Second,
@@ -93,9 +95,9 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Dial first: reject with 502 before hijacking on failure.
-	egress, err := h.Egress.DialContext(r.Context(), "tcp", target)
+	egress, err := lane.Dial(r.Context(), h.Provider, "tcp", target)
 	if err != nil {
-		h.Egress.Reject("connect " + target + ": " + err.Error())
+		h.Provider.Reject("connect " + target + ": " + err.Error())
 		http.Error(w, "dial through lane failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -105,7 +107,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// The connection is unusable; the ResponseWriter may be detached, so
 		// do not attempt to write through it.
-		h.Egress.Reject("hijack failed: " + err.Error())
+		h.Provider.Reject("hijack failed: " + err.Error())
 		return
 	}
 	defer client.Close()
@@ -133,7 +135,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 // handleForward proxies an absolute-URI request (plain HTTP proxying).
 func (h *Handler) handleForward(w http.ResponseWriter, r *http.Request) {
 	if !r.URL.IsAbs() || r.URL.Host == "" {
-		h.Egress.Reject("non-absolute request URI")
+		h.Provider.Reject("non-absolute request URI")
 		http.Error(w, "niclane: this endpoint is an HTTP proxy; requests must use absolute URIs", http.StatusBadRequest)
 		return
 	}
@@ -144,7 +146,7 @@ func (h *Handler) handleForward(w http.ResponseWriter, r *http.Request) {
 	resp, err := h.transport.RoundTrip(out)
 	if err != nil {
 		if isLaneFail(err) {
-			h.Egress.Reject("forward " + r.URL.Host + ": " + err.Error())
+			h.Provider.Reject("forward " + r.URL.Host + ": " + err.Error())
 		}
 		http.Error(w, "forward through lane failed: "+err.Error(), http.StatusBadGateway)
 		return

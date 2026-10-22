@@ -45,12 +45,12 @@ const (
 	repCmdNotSupported = 0x07
 )
 
-// Server serves SOCKS5 for one lane.
+// Server serves SOCKS5 for one lane provider.
 type Server struct {
-	Egress lane.Egress
-	Auth   *config.AuthConfig
-	Log    *slog.Logger
-	Idle   time.Duration
+	Provider lane.Provider
+	Auth     *config.AuthConfig
+	Log      *slog.Logger
+	Idle     time.Duration
 	// ListenHost is the host the TCP listener binds ("0.0.0.0" when
 	// unspecified); the client-facing UDP socket binds the same address.
 	ListenHost string
@@ -113,12 +113,12 @@ func (s *Server) handle(conn net.Conn) {
 		s.handleUDP(conn)
 	default:
 		_ = s.reply(conn, repCmdNotSupported, nil, 0)
-		s.Egress.Reject("unsupported command")
+		s.Provider.Reject("unsupported command")
 	}
 }
 
 func (s *Server) reject(stage string, err error) {
-	s.Egress.Reject(stage + ": " + err.Error())
+	s.Provider.Reject(stage + ": " + err.Error())
 	s.log().Debug("socks5 reject", "stage", stage, "error", err)
 }
 
@@ -282,10 +282,10 @@ func replyFor(err error) byte {
 
 func (s *Server) handleConnect(conn net.Conn, req *socksRequest) {
 	target := net.JoinHostPort(req.host, fmt.Sprint(req.port))
-	egress, err := s.Egress.DialContext(context.Background(), "tcp", target)
+	egress, err := lane.Dial(context.Background(), s.Provider, "tcp", target)
 	if err != nil {
 		_ = s.reply(conn, replyFor(err), nil, 0)
-		s.Egress.Reject("connect " + target + ": " + err.Error())
+		s.Provider.Reject("connect " + target + ": " + err.Error())
 		s.log().Debug("connect failed", "target", target, "error", err)
 		return
 	}
@@ -311,19 +311,26 @@ func (s *Server) handleUDP(conn net.Conn) {
 	ctx, cancel := context.WithCancel(base)
 	defer cancel()
 
+	eg, err := s.Provider.Acquire(ctx)
+	if err != nil {
+		_ = s.reply(conn, replyFor(err), nil, 0)
+		s.Provider.Reject("udp associate: " + err.Error())
+		return
+	}
+
 	clientIP := net.ParseIP(s.ListenHost)
 	cuc, err := net.ListenUDP("udp", &net.UDPAddr{IP: clientIP})
 	if err != nil {
 		_ = s.reply(conn, repGeneralFailure, nil, 0)
-		s.Egress.Reject("udp associate: listen client socket: " + err.Error())
+		s.Provider.Reject("udp associate: listen client socket: " + err.Error())
 		return
 	}
 	defer cuc.Close()
 
-	uc, err := s.Egress.ListenUDP(ctx)
+	uc, err := eg.ListenUDP(ctx)
 	if err != nil {
 		_ = s.reply(conn, replyFor(err), nil, 0)
-		s.Egress.Reject("udp associate: " + err.Error())
+		s.Provider.Reject("udp associate: " + err.Error())
 		return
 	}
 	defer uc.Close()
@@ -336,7 +343,7 @@ func (s *Server) handleUDP(conn net.Conn) {
 		return
 	}
 
-	stats := s.Egress.Stats()
+	stats := eg.Stats()
 	var clientAddr *net.UDPAddr
 	var lastTarget *net.UDPAddr
 	var mu sync.Mutex
@@ -400,7 +407,7 @@ func (s *Server) handleUDP(conn net.Conn) {
 		known := clientAddr.String() == from.String()
 		mu.Unlock()
 		if !known {
-			s.Egress.Reject("udp datagram from unexpected source " + from.String())
+			eg.Reject("udp datagram from unexpected source " + from.String())
 			continue
 		}
 		if n < 4 || buf[0] != 0x00 || buf[1] != 0x00 {
@@ -408,12 +415,12 @@ func (s *Server) handleUDP(conn net.Conn) {
 		}
 		if buf[2] != 0x00 {
 			// Fragmentation unsupported.
-			s.Egress.Reject("udp fragmentation requested")
+			eg.Reject("udp fragmentation requested")
 			continue
 		}
-		payload, dst, err := parseUDPHeader(ctx, buf[:n], s.Egress)
+		payload, dst, err := parseUDPHeader(ctx, buf[:n], eg)
 		if err != nil {
-			s.Egress.Reject("udp header: " + err.Error())
+			eg.Reject("udp header: " + err.Error())
 			continue
 		}
 		mu.Lock()

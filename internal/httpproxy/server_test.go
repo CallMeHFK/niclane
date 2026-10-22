@@ -31,7 +31,7 @@ func newLane(t *testing.T, lc *config.LaneConfig) *lane.Lane {
 }
 
 // startProxy launches an HTTP proxy handler on 127.0.0.1 and returns its URL.
-func startProxy(t *testing.T, egress lane.Egress) *httptest.Server {
+func startProxy(t *testing.T, egress lane.Provider) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(NewHandler(egress, discardLogger(), 0, context.Background()))
 	t.Cleanup(srv.Close)

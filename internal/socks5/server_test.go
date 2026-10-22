@@ -69,7 +69,7 @@ func startSocks5(t *testing.T, lc *config.LaneConfig, auth *config.AuthConfig) s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	srv := &Server{Egress: l, Auth: auth, Log: discardLogger(), ListenHost: "127.0.0.1"}
+	srv := &Server{Provider: l, Auth: auth, Log: discardLogger(), ListenHost: "127.0.0.1"}
 	go srv.Serve(ln)
 	time.Sleep(50 * time.Millisecond)
 	return ln.Addr().String()

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — unreleased
+## 0.4.0 — 2026-10-22
 
 - **Candidate lanes (automatic failover)**: a lane can hold an ordered set of
   `(interface, upstream)` candidates instead of one fixed NIC. Each client

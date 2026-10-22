@@ -24,6 +24,7 @@ import (
 	"github.com/CallMeHFK/niclane/internal/doctor"
 	"github.com/CallMeHFK/niclane/internal/lane"
 	"github.com/CallMeHFK/niclane/internal/metrics"
+	"github.com/CallMeHFK/niclane/internal/selector"
 	"github.com/CallMeHFK/niclane/internal/supervisor"
 	"github.com/CallMeHFK/niclane/internal/version"
 )
@@ -167,6 +168,32 @@ func cmdTest(args []string) error {
 		if *only != "" && lc.Name != *only {
 			continue
 		}
+		if lc.HasCandidates() {
+			reg := metrics.NewRegistry()
+			sel, err := selector.New(lc, cfg.Discovery, newLogger("error"), reg.Register(lc.Name))
+			if err != nil {
+				return err
+			}
+			sel.Refresh(context.Background())
+			active := sel.Active()
+			for _, r := range sel.Test(context.Background(), *urlFlag, *timeout) {
+				name := lc.Name + "#" + candidateName(r.Candidate)
+				if active != "" && strings.HasSuffix(name, active) {
+					name += "*"
+				}
+				egress := r.Candidate.Upstream
+				if egress == "" {
+					egress = "direct:" + r.Candidate.Interface
+				}
+				if r.Err != nil {
+					fmt.Printf("%-24s %-10v %-12s %-22s FAIL: %v\n", name, r.Candidate.Healthy, "candidate", egress, r.Err)
+					failures++
+					continue
+				}
+				fmt.Printf("%-24s %-10v %-12s %-22s exit-ip=%s\n", name, r.Candidate.Healthy, "candidate", egress, r.ExitIP)
+			}
+			continue
+		}
 		reg := metrics.NewRegistry()
 		l, err := lane.New(lc, newLogger("error"), reg.Register(lc.Name))
 		if err != nil {
@@ -204,6 +231,18 @@ func cmdTest(args []string) error {
 		return fmt.Errorf("%d lane(s) failed", failures)
 	}
 	return nil
+}
+
+// candidateName renders a short label for a candidate row.
+func candidateName(c selector.CandidateStatus) string {
+	if c.Interface != "" {
+		return c.Interface
+	}
+	s := c.Upstream
+	if i := strings.Index(s, "://"); i >= 0 {
+		s = s[i+3:]
+	}
+	return strings.TrimSuffix(s, "/")
 }
 
 func cmdBench(args []string) error {
@@ -308,6 +347,24 @@ func cmdStatus(args []string) error {
 	for _, r := range rows {
 		fmt.Printf("%-16s %-10v %-10s %-16s %-8d %10d %10d %8d\n",
 			r.Name, r.Healthy, r.BindMode, r.Egress, r.ConnsActive, r.ConnsTotal, r.BytesUp+r.BytesDown, r.Rejects)
+	}
+	for _, r := range rows {
+		if len(r.Candidates) == 0 {
+			continue
+		}
+		fmt.Printf("\ncandidates for %s (priority desc):\n", r.Name)
+		fmt.Printf("  %-28s %-10s %-6s %-8s %-8s %s\n", "UPSTREAM", "SOURCE", "PRIO", "HEALTHY", "DELAY", "LAST ERROR")
+		for _, c := range r.Candidates {
+			up := c.Upstream
+			if up == "" {
+				up = "direct:" + c.Interface
+			}
+			delay := "-"
+			if c.DelayMS > 0 {
+				delay = fmt.Sprintf("%dms", c.DelayMS)
+			}
+			fmt.Printf("  %-28s %-10s %-6d %-8v %-8s %s\n", up, c.Source, c.Priority, c.Healthy, delay, c.LastError)
+		}
 	}
 	return nil
 }

@@ -347,6 +347,16 @@ func (s *Selector) statusLocked(c *candidate) CandidateStatus {
 	return st
 }
 
+// Active returns the label of the candidate used for the last connection.
+func (s *Selector) Active() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.active == nil {
+		return ""
+	}
+	return s.active.label()
+}
+
 // Counts aggregates child counters for the lane-level status.
 func (s *Selector) Counts() Counts {
 	s.mu.RLock()

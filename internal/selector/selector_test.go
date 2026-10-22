@@ -111,6 +111,7 @@ func newSelector(t *testing.T, probeAddr string, cands ...*config.CandidateConfi
 	if err != nil {
 		t.Fatal(err)
 	}
+	sel.discoverFn = func(context.Context, *Selector) []Discovered { return nil }
 	return sel
 }
 
@@ -227,5 +228,51 @@ func TestStrictFailsClosedWhenAllDead(t *testing.T) {
 
 	if _, err := sel.Acquire(context.Background()); err == nil {
 		t.Fatal("expected fail-closed error")
+	}
+}
+
+func TestDiscoveryAddsAndRemovesCandidates(t *testing.T) {
+	target := startTarget(t)
+	static := newFakeProxy(t)
+	sel := newSelector(t, target, cand(static.addr(), config.StaticCandidatePriority))
+
+	var found []Discovered
+	sel.discoverFn = func(context.Context, *Selector) []Discovered { return found }
+
+	found = []Discovered{
+		{Interface: "eth9", Upstream: "http://10.9.9.1:10808"},
+		{Interface: "eth8", Upstream: "http://10.8.8.1:10808"},
+	}
+	sel.Refresh(context.Background())
+	got := sel.Candidates()
+	if len(got) != 3 {
+		t.Fatalf("candidates = %d, want 3: %+v", len(got), got)
+	}
+	for _, c := range got {
+		if c.Source == "discovered" && c.Priority != config.DiscoveredCandidatePriority {
+			t.Fatalf("discovered priority = %d, want %d", c.Priority, config.DiscoveredCandidatePriority)
+		}
+	}
+
+	// eth9 vanished from the scan; the static candidate must survive.
+	found = []Discovered{{Interface: "eth8", Upstream: "http://10.8.8.1:10808"}}
+	sel.Refresh(context.Background())
+	got = sel.Candidates()
+	if len(got) != 2 {
+		t.Fatalf("candidates after rescan = %d, want 2: %+v", len(got), got)
+	}
+	var haveStatic, haveEth8 bool
+	for _, c := range got {
+		switch {
+		case c.Source == "static":
+			haveStatic = true
+		case c.Interface == "eth8":
+			haveEth8 = true
+		case c.Interface == "eth9":
+			t.Fatal("eth9 should have been removed")
+		}
+	}
+	if !haveStatic || !haveEth8 {
+		t.Fatalf("static=%v eth8=%v, want both kept: %+v", haveStatic, haveEth8, got)
 	}
 }

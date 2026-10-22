@@ -14,11 +14,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/CallMeHFK/niclane/internal/config"
+	"github.com/CallMeHFK/niclane/internal/discover"
 	"github.com/CallMeHFK/niclane/internal/lane"
 	"github.com/CallMeHFK/niclane/internal/metrics"
 )
@@ -108,7 +110,8 @@ type Selector struct {
 	lastErr string
 
 	// discoverFn is replaced in tests; nil means use the real discovery.
-	discoverFn func(context.Context, *Selector) []Discovered
+	discoverFn        func(context.Context, *Selector) []Discovered
+	unsupportedLogged bool
 }
 
 // Discovered is a candidate found at runtime.
@@ -142,9 +145,6 @@ func New(lc *config.LaneConfig, global *config.DiscoveryConfig, log *slog.Logger
 		if err := s.addCandidate(c.Interface, c.Upstream, c.EffectivePriority(), "static"); err != nil {
 			return nil, fmt.Errorf("lane %q: %w", lc.Name, err)
 		}
-	}
-	if lc.Discover != nil {
-		s.syncDiscovered(context.Background())
 	}
 	return s, nil
 }
@@ -555,6 +555,80 @@ func (s *Selector) statusFor(c *candidate) CandidateStatus {
 	return s.statusLocked(c)
 }
 
-// syncDiscovered is filled in by the discovery wiring; it is a no-op when the
-// lane has no discover block and when discovery is unavailable.
-func (s *Selector) syncDiscovered(ctx context.Context) {}
+// syncDiscovered refreshes the discovered candidate set. Static candidates
+// are never removed; a discovered candidate that disappeared is dropped on
+// the next pass.
+func (s *Selector) syncDiscovered(ctx context.Context) {
+	if s.parent.Discover == nil {
+		return
+	}
+	var (
+		found []Discovered
+		err   error
+	)
+	if s.discoverFn != nil {
+		found = s.discoverFn(ctx, s)
+	} else {
+		var devs []discover.Device
+		devs, err = discover.Devices(ctx, discover.Options{
+			Interfaces: s.parent.Discover.EffectiveInterfaces(),
+			Via:        s.parent.Discover.Via,
+			Ports:      s.parent.Discover.EffectivePorts(s.global),
+			Log:        s.log,
+		})
+		if err == nil {
+			found = make([]Discovered, 0, len(devs))
+			for _, d := range devs {
+				found = append(found, Discovered{
+					Interface: d.Interface,
+					Upstream:  "http://" + net.JoinHostPort(d.Gateway.String(), strconv.Itoa(d.Port)),
+				})
+			}
+		}
+	}
+	if err != nil {
+		if errors.Is(err, discover.ErrUnsupported) {
+			s.mu.Lock()
+			if !s.unsupportedLogged {
+				s.unsupportedLogged = true
+				s.log.Info("auto-discovery disabled: unsupported platform")
+			}
+			s.mu.Unlock()
+			return
+		}
+		s.log.Warn("discovery failed", "error", err)
+		return
+	}
+
+	want := make(map[string]bool, len(found))
+	for _, d := range found {
+		want[candidateKey(d.Interface, d.Upstream)] = true
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.cands[:0]
+	for _, c := range s.cands {
+		if c.source == "discovered" && !want[candidateKey(c.iface, c.upstream)] {
+			delete(s.byKey, candidateKey(c.iface, c.upstream))
+			if s.active == c {
+				s.active = nil
+			}
+			continue
+		}
+		kept = append(kept, c)
+	}
+	s.cands = kept
+	for i, c := range s.cands {
+		c.order = i
+	}
+	for _, d := range found {
+		key := candidateKey(d.Interface, d.Upstream)
+		if _, ok := s.byKey[key]; ok {
+			continue
+		}
+		if err := s.addCandidate(d.Interface, d.Upstream, config.DiscoveredCandidatePriority, "discovered"); err != nil {
+			s.log.Warn("discover: cannot add candidate", "interface", d.Interface, "upstream", d.Upstream, "error", err)
+		}
+	}
+}

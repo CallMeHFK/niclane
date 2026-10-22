@@ -42,6 +42,8 @@ func main() {
 		err = doctor.Run(os.Stdout)
 	case "test":
 		err = cmdTest(os.Args[2:])
+	case "discover":
+		err = cmdDiscover(os.Args[2:])
 	case "bench":
 		err = cmdBench(os.Args[2:])
 	case "status":
@@ -67,6 +69,7 @@ Usage:
   niclane serve  -c niclane.yaml     run the configured proxy lanes (SIGHUP reloads)
   niclane doctor                     inspect interfaces, capabilities, suggestions
   niclane test   -c niclane.yaml     verify each lane's real egress (exit IP)
+  niclane discover -c niclane.yaml   scan device gateways for proxy ports (auto-discovery lanes)
   niclane bench  -c niclane.yaml     measure per-lane throughput against an echo sink
   niclane bench serve --listen :9999 run the echo sink on a peer host
   niclane status -c niclane.yaml     query the admin endpoint of a running instance
@@ -243,6 +246,61 @@ func candidateName(c selector.CandidateStatus) string {
 		s = s[i+3:]
 	}
 	return strings.TrimSuffix(s, "/")
+}
+
+// cmdDiscover lists what auto-discovery currently sees on each discovery
+// lane: device interfaces, their gateway proxy endpoints, and probe health.
+func cmdDiscover(args []string) error {
+	fs := flag.NewFlagSet("discover", flag.ExitOnError)
+	cfgPath := fs.String("c", "niclane.yaml", "path to config file")
+	only := fs.String("lane", "", "scan only this lane")
+	fs.Parse(args)
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%-14s %-18s %-26s %-10s %-7s %-7s %s\n", "LANE", "INTERFACE", "UPSTREAM", "SOURCE", "HEALTHY", "DELAY", "ERROR")
+	var scanned, discovered int
+	for _, lc := range cfg.Lanes {
+		if *only != "" && lc.Name != *only {
+			continue
+		}
+		if lc.Discover == nil {
+			if *only != "" {
+				return fmt.Errorf("lane %q has no discover block", *only)
+			}
+			continue
+		}
+		scanned++
+		// Probe URL and interval live in the discover block; the child lanes
+		// use the same security settings as the parent lane.
+		sel, err := selector.New(lc, cfg.Discovery, newLogger("error"), metrics.NewRegistry().Register(lc.Name))
+		if err != nil {
+			return err
+		}
+		sel.Refresh(context.Background())
+		for _, c := range sel.Candidates() {
+			if c.Source == "discovered" {
+				discovered++
+			}
+			delay := "-"
+			if c.DelayMS > 0 {
+				delay = fmt.Sprintf("%dms", c.DelayMS)
+			}
+			fmt.Printf("%-14s %-18s %-26s %-10s %-7v %-7s %s\n", lc.Name, c.Interface, c.Upstream, c.Source, c.Healthy, delay, c.LastError)
+		}
+	}
+	if scanned == 0 {
+		if *only != "" {
+			return fmt.Errorf("lane %q not found", *only)
+		}
+		return errors.New("no lanes with discover configured")
+	}
+	if discovered == 0 {
+		fmt.Println("\nno proxy port answered; extend discovery.ports if your device uses a different port")
+	}
+	return nil
 }
 
 func cmdBench(args []string) error {

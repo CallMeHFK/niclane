@@ -1,6 +1,6 @@
 ---
 name: niclane
-description: Operate niclane: local SOCKS5/HTTP proxy lanes pinned per network interface (one NIC, one lane, fail-closed). Use whenever an app's traffic must egress via a specific NIC, be split across WiFi/dock/hotspot/TUN, or the user mentions 多网卡, 网卡分流, 指定网卡出口, SocksBypass, egress isolation.
+description: Operate niclane: local SOCKS5/HTTP proxy lanes pinned per network interface (one NIC, one lane, fail-closed), with optional candidate sets and auto-discovery that fail over between tethered/hotspot devices. Use whenever an app's traffic must egress via a specific NIC, be split across WiFi/dock/hotspot/TUN, need automatic fallback when one device drops, or the user mentions 多网卡, 网卡分流, 指定网卡出口, 多设备回退, 自动发现, SocksBypass, egress isolation.
 ---
 
 # niclane — per-NIC proxy lanes
@@ -10,6 +10,12 @@ SOCKS5/HTTP listener whose outbound sockets are pinned to one NIC
 (`SO_BINDTODEVICE` on Linux, `IP_BOUND_IF` on macOS). Apps pick a lane by
 proxy port; lanes never leak into each other and **fail closed** — if the
 lane's NIC goes down, connections are rejected, never silently rerouted.
+
+A lane can also span several NICs via `candidates:` / `discover:`: each
+connection is pinned to one healthy candidate, failover is transport-only
+inside that candidate set, and the lane still fails closed when none is
+healthy. This is the sanctioned way to do device fallback — do not build
+external watchers for it.
 
 ## Standard workflow (follow in order)
 

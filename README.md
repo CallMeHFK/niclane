@@ -37,12 +37,17 @@ app C ──> 127.0.0.1:7893 (socks5, lane "tun")   ──[SO_BINDTODEVICE Mihom
 
 Each lane:
 
-1. **Pins its egress to one interface.** Linux uses `SO_BINDTODEVICE`;
-   macOS uses `IP_BOUND_IF`/`IPV6_BOUND_IF`; other platforms fall back to
-   binding the interface's source IP (weaker — see [limitations](#guarantees-and-honest-limitations)).
+1. **Pins egress to one interface per connection.** Linux uses
+   `SO_BINDTODEVICE`; macOS uses `IP_BOUND_IF`/`IPV6_BOUND_IF`; other
+   platforms fall back to binding the interface's source IP (weaker — see
+   [limitations](#guarantees-and-honest-limitations)). A candidate lane may
+   hold several interfaces and chooses one per connection, never mixing them
+   within a connection.
 2. **Fails closed.** A monitor re-checks the interface every 2 s (up? has an
    address?). While unhealthy and `strict: true` (the default), dials are
-   rejected with `SOCKS5 0x01` / HTTP 502. No fallback, no leak.
+   rejected with `SOCKS5 0x01` / HTTP 502. A single-interface lane has no
+   fallback at all; a candidate lane may only fail over to its own
+   configured/discovered candidates, and still rejects when none is healthy.
 3. **Resolves DNS through its own lane.** Domain lookups are dialed through
    the pinned interface, so DNS cannot leak out of another NIC. Loopback
    nameservers (systemd-resolved) are substituted with `dns_servers` /
@@ -267,8 +272,11 @@ Verified by the test suite and/or on real hardware:
 - ✅ Device-bound egress: TCP and UDP traffic leaves *only* through the pinned
   interface, even when other default routes exist (Linux ≥ 5.7 unprivileged,
   macOS unprivileged).
-- ✅ Fail-closed: missing/down/unaddressed interface ⇒ immediate reject, never
-  a silent fallback.
+- ✅ Fail-closed: missing/down/unaddressed interface ⇒ immediate reject; a
+  single-interface lane never falls back.
+- ✅ Candidate lanes: transport-only failover inside the candidate set,
+  ranked by real health probes, rejecting when every candidate is dead
+  (verified on hardware with two USB-tethered phones).
 - ✅ Per-lane DNS: queries egress through the lane; loopback NS substituted;
   `dns: doh` verified live against AliDNS.
 - ✅ UDP target resolution through the lane's DNS mode (SOCKS5 UDP

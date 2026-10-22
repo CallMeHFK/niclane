@@ -4,3 +4,4 @@ niclane.exe
 *.out
 coverage.*
 .DS_Store
+.zcode/

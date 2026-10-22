@@ -1,5 +1,9 @@
 # Lane Candidate Sets Implementation Plan
 
+> **Status:** implemented on 2026-10-22 (commits `1ffdd15..38c8a23`; spec
+> `0bebefc`). Kept as the design/implementation record — do not re-execute
+> this plan.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** One lane listener fronts an ordered set of `(interface, upstream)` candidates, selected per connection by health, with Linux auto-discovery of gateway proxies.

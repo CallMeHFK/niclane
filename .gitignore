@@ -5,3 +5,4 @@ niclane.exe
 coverage.*
 .DS_Store
 .zcode/
+.codebuddy/

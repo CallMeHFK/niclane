@@ -104,7 +104,9 @@ func Devices(ctx context.Context, o Options) ([]Device, error) {
 			devices = append(devices, Device{Interface: j.ifName, Gateway: j.gw, Port: j.port})
 			mu.Unlock()
 			if o.Log != nil {
-				o.Log.Info("discover: proxy port open", "interface", j.ifName,
+				// Per-round noise: the selector layer announces candidate
+				// additions and removals, so this stays at debug level.
+				o.Log.Debug("discover: proxy port open", "interface", j.ifName,
 					"gateway", j.gw.String(), "port", j.port)
 			}
 		}(j)

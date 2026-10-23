@@ -265,6 +265,8 @@ func (s *Selector) Acquire(context.Context) (lane.Egress, error) {
 		return nil, fmt.Errorf("%w: no healthy candidate", lane.ErrFailClosed)
 	}
 	s.active = pick
+	s.lastErr = ""
+	s.stats.SetLastErr("")
 	return pick.lane, nil
 }
 
@@ -342,7 +344,9 @@ func (s *Selector) statusLocked(c *candidate) CandidateStatus {
 		Healthy:   ok && !s.deadLocked(c),
 		LastError: c.lastErr,
 	}
-	if c.delay > 0 {
+	// A stale delay from the last successful probe would mislead: only a
+	// healthy candidate reports one.
+	if st.Healthy && c.delay > 0 {
 		st.DelayMS = c.delay.Milliseconds()
 	}
 	return st
@@ -401,7 +405,22 @@ func (s *Selector) Run(ctx context.Context) {
 // Refresh runs one discovery sync (when enabled) and probes every candidate.
 func (s *Selector) Refresh(ctx context.Context) {
 	s.syncDiscovered(ctx)
+	s.refreshLanes()
 	s.probeAll(ctx)
+}
+
+// refreshLanes re-snapshots every candidate's child lane before probing.
+// Child lanes are otherwise frozen at their creation snapshot: a candidate
+// whose NIC was down when the process started would stay unhealthy forever,
+// because the strict dial gate fails even the health probe — the candidate
+// could never recover once its NIC returns.
+func (s *Selector) refreshLanes() {
+	s.mu.RLock()
+	list := append([]*candidate(nil), s.cands...)
+	s.mu.RUnlock()
+	for _, c := range list {
+		c.lane.Refresh()
+	}
 }
 
 func (s *Selector) probeAll(ctx context.Context) {
@@ -425,7 +444,8 @@ func (s *Selector) probeAll(ctx context.Context) {
 }
 
 func (s *Selector) refreshHealth() {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	now := time.Now()
 	healthy := false
 	for _, c := range s.cands {
@@ -440,8 +460,12 @@ func (s *Selector) refreshHealth() {
 		_, m, _ := s.active.lane.Current()
 		mode = m
 	}
-	s.mu.RUnlock()
-
+	// A probe round that found a usable candidate also settles the lane-level
+	// error: concurrent probes may have written a failure after a success.
+	if healthy {
+		s.lastErr = ""
+		s.stats.SetLastErr("")
+	}
 	s.stats.Healthy.Store(healthy)
 	s.stats.BindMode.Store(mode)
 }
@@ -471,6 +495,8 @@ func (s *Selector) probeOne(ctx context.Context, c *candidate) {
 	if err == nil {
 		c.known, c.probeOK, c.fails, c.delay, c.lastErr = true, true, 0, delay, ""
 		c.suspectUntil = time.Time{}
+		s.lastErr = ""
+		s.stats.SetLastErr("")
 		if !c.announced {
 			c.announced = true
 			s.log.Info("candidate healthy", "candidate", c.label(), "source", c.source, "delay", delay)
@@ -479,9 +505,13 @@ func (s *Selector) probeOne(ctx context.Context, c *candidate) {
 	}
 	c.known = true
 	c.probeOK = false
+	dead := s.deadLocked(c)
 	c.fails++
 	c.lastErr = err.Error()
 	s.stats.SetLastErr(c.lastErr)
+	if !dead && s.deadLocked(c) {
+		s.log.Warn("candidate unhealthy", "candidate", c.label(), "source", c.source, "error", err, "fails", c.fails)
+	}
 }
 
 // probeEgress asks the candidate to fetch the probe URL and accepts any 2xx.
@@ -619,6 +649,7 @@ func (s *Selector) syncDiscovered(ctx context.Context) {
 	kept := s.cands[:0]
 	for _, c := range s.cands {
 		if c.source == "discovered" && !want[candidateKey(c.iface, c.upstream)] {
+			s.log.Info("candidate removed", "interface", c.iface, "upstream", c.upstream)
 			delete(s.byKey, candidateKey(c.iface, c.upstream))
 			if s.active == c {
 				s.active = nil

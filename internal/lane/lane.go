@@ -38,6 +38,21 @@ func deviceBindAvailable() bool {
 // Refresh forces an immediate health snapshot update.
 func (l *Lane) Refresh() { l.refresh() }
 
+// healthHook overrides computed lane health when non-nil. Tests install it
+// via SwapHealthHookForTest to simulate NICs that come and go without root
+// privileges; production leaves it nil.
+var healthHook func(l *Lane) (healthy bool, lastErr string)
+
+// SwapHealthHookForTest installs f as a global override of computed lane
+// health snapshots and returns the previous hook (nil if none). Production
+// code never calls it; tests use it to simulate an egress interface that
+// comes up after process start.
+func SwapHealthHookForTest(f func(l *Lane) (healthy bool, lastErr string)) func(l *Lane) (healthy bool, lastErr string) {
+	prev := healthHook
+	healthHook = f
+	return prev
+}
+
 // trackedConn decrements the active-connection gauge on close.
 type trackedConn struct {
 	net.Conn
@@ -257,7 +272,18 @@ func (l *Lane) refresh() {
 	}
 }
 
+// computeSnapshot derives the health snapshot from the system state, then
+// lets a test hook override the health verdict.
 func (l *Lane) computeSnapshot() snapshot {
+	s := l.sysSnapshot()
+	if f := healthHook; f != nil {
+		s.healthy, s.lastErr = f(l)
+	}
+	return s
+}
+
+// sysSnapshot derives the health snapshot from the system interface state.
+func (l *Lane) sysSnapshot() snapshot {
 	cfg := l.cfg
 	switch {
 	case cfg.Interface != "":

@@ -218,6 +218,99 @@ func TestProbeDebounceAndRecovery(t *testing.T) {
 	}
 }
 
+// TestStaticCandidateRecoversAfterInterfaceReturns is the regression test for
+// the frozen child-lane snapshot: a static candidate whose NIC is down when
+// the process starts must die, then recover once the NIC returns — probe
+// rounds re-snapshot child lanes instead of trusting the creation snapshot.
+func TestStaticCandidateRecoversAfterInterfaceReturns(t *testing.T) {
+	target := startTarget(t)
+	proxy := newFakeProxy(t)
+
+	var ifaceUp atomic.Bool
+	prev := lane.SwapHealthHookForTest(func(*lane.Lane) (bool, string) {
+		if ifaceUp.Load() {
+			return true, ""
+		}
+		return false, "interface niclane-test0 is down"
+	})
+	defer lane.SwapHealthHookForTest(prev)
+
+	sel := newSelector(t, target, cand(proxy.addr(), config.StaticCandidatePriority))
+
+	// The NIC is down while the candidate joins: the strict dial gate fails
+	// the probes and the candidate dies.
+	sel.Refresh(context.Background())
+	sel.Refresh(context.Background())
+	if got := sel.Candidates()[0].Healthy; got {
+		t.Fatal("candidate must be dead while its NIC is down")
+	}
+	if _, err := sel.Acquire(context.Background()); err == nil {
+		t.Fatal("expected fail-closed while the only candidate is dead")
+	}
+
+	// The NIC comes back: the next round must re-snapshot the child lane,
+	// let the probe through and recover the candidate.
+	ifaceUp.Store(true)
+	sel.Refresh(context.Background())
+	st := sel.Candidates()[0]
+	if !st.Healthy {
+		t.Fatalf("candidate did not recover after its NIC returned: %+v", st)
+	}
+	if _, err := sel.Acquire(context.Background()); err != nil {
+		t.Fatalf("acquire after recovery: %v", err)
+	}
+	if healthy, _, laneErr := sel.Current(); !healthy || laneErr != "" {
+		t.Fatalf("lane = healthy:%v err:%q, want healthy with no stale error", healthy, laneErr)
+	}
+}
+
+func TestStatusDropsStaleDelayAndError(t *testing.T) {
+	target := startTarget(t)
+	proxy := newFakeProxy(t)
+	sel := newSelector(t, target, cand(proxy.addr(), 100))
+
+	sel.Refresh(context.Background())
+	st := sel.Candidates()[0]
+	if !st.Healthy {
+		t.Fatalf("candidate should be healthy: %+v", st)
+	}
+	sel.mu.RLock()
+	hadDelay := sel.cands[0].delay > 0
+	sel.mu.RUnlock()
+	if !hadDelay {
+		t.Fatal("a successful probe should have recorded a delay")
+	}
+
+	proxy.reject.Store(true)
+	sel.Refresh(context.Background())
+	sel.Refresh(context.Background())
+	if _, err := sel.Acquire(context.Background()); err == nil {
+		t.Fatal("expected fail-closed once the candidate is dead")
+	}
+	st = sel.Candidates()[0]
+	if st.Healthy {
+		t.Fatalf("candidate should be dead: %+v", st)
+	}
+	if st.DelayMS != 0 {
+		t.Fatalf("dead candidate keeps its stale delay: %dms", st.DelayMS)
+	}
+	if _, _, laneErr := sel.Current(); laneErr != "no healthy candidate" {
+		t.Fatalf("lane error = %q, want %q", laneErr, "no healthy candidate")
+	}
+
+	// Recovery must clear the lane error; a fresh delay is reported only
+	// while the candidate stays healthy.
+	proxy.reject.Store(false)
+	sel.Refresh(context.Background())
+	st = sel.Candidates()[0]
+	if !st.Healthy {
+		t.Fatalf("candidate should recover: %+v", st)
+	}
+	if healthy, _, laneErr := sel.Current(); !healthy || laneErr != "" {
+		t.Fatalf("lane = healthy:%v err:%q, want healthy with no error", healthy, laneErr)
+	}
+}
+
 func TestStrictFailsClosedWhenAllDead(t *testing.T) {
 	target := startTarget(t)
 	proxy := newFakeProxy(t)

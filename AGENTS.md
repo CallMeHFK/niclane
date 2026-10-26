@@ -15,8 +15,9 @@
 
 1. **真实网卡名 / 内网 IP 是本仓库的泄漏红线。**
    线上（`origin/main`）的历史已被整体脱敏（RFC 5737 文档 IP + 通用网卡名），
-   本地工作区仍残留真实值（见 §6）。**任何文档、示例、测试夹具里只允许出现脱敏值。**
-   详见 §6 的对照表，写新示例前先看那里。
+   本地 `main` 也已于 2026-10-26 对齐线上，工作区**已无真实值**（见 §6）。
+   **任何文档、示例、测试夹具里只允许出现脱敏值** —— 每次提交前跑 §4.1 的
+   四类筛查，那是把真实值挡在历史之外的唯一闸门。写新示例前先看 §6.2 的对照表。
 2. **`fail-closed` 语义不可破坏。** 车道的网卡挂了就必须拒绝连接，
    绝不静默改道。README 明文要求："keep the fail-closed semantics intact in
    any change that touches dialing"。碰 `internal/lane`、`internal/selector`
@@ -87,8 +88,14 @@ niclane test -c niclane.yaml -url http://members.3322.org/dyndns/getip   # 验�
 
 本仓库已初始化代码知识图谱（CLI：`graphify 0.9.95`，位于 `~/.local/bin/graphify`）。
 
-- **当前状态**（实测）：`graphify-out/graph.json` = **596 节点 / 1659 边 / 28 社区**，
-  `built_at_commit` == `git rev-parse HEAD`（`9c156e6`），无垃圾节点。
+- **当前状态**：图的规模与 `built_at_commit` **用命令读，别信本文件里的数字**
+  （社区数在两次重建间会波动 —— 本仓库同一份代码实测出过 29 和 23 个社区，
+  所以这里不写死）：
+  ```bash
+  python3 -c "import json;d=json.load(open('graphify-out/graph.json'));print(len(d['nodes']),'nodes /',len(d['links']),'links /',len({n['community'] for n in d['nodes']}),'communities |',d['built_at_commit'])"
+  git rev-parse HEAD        # 两个 SHA 必须相等，见 §3.3 的 Done when
+  ```
+  撰写时：**618 节点 / 1688 边 / 23 社区**，`built_at_commit` == `HEAD`，无垃圾节点。
 - **钩子已装**：`post-commit` / `post-checkout` / `post-merge` / `post-rewrite`
   + `graph.json` 的 git merge driver（`graphify hook status` 复核，四项 + driver 全 installed）。
   由 `graphify hook install` 一并创建的 `.gitattributes`（`graphify-out/graph.json merge=graphify`）
@@ -127,6 +134,7 @@ niclane test -c niclane.yaml -url http://members.3322.org/dyndns/getip   # 验�
 |---|---|---|
 | 改了代码 | `graphify update .` | 增量 AST 重抽，无 LLM，本仓库实测 **0.6s** |
 | 大量删代码后 | `graphify update . --force` | 否则收缩守卫会拒绝变小的图（也可 `GRAPHIFY_FORCE=1`） |
+| **`built_at_commit` 落后于 HEAD** | `rm graphify-out/graph.json && graphify update .` | **`--force` 不是"强制重建"**（它的语义只是"允许写入更小的图"）。拓扑没变时 `update` 会打印 `No code-graph topology changes detected; outputs left untouched` 并**连 `built_at_commit` 一起不写** —— 只有让图从零重建才会刷新元数据。本仓库实测：`update`/`update --force` 都刷不动，删掉 `graph.json` 后重跑即 `== HEAD`（节点/边数不变） |
 | 每次 commit 自动更新 | `graphify hook install`（**已装**） | post-commit 等五个钩子，只管代码层 |
 | 长会话边写边更 | `graphify watch .` | 文件变更即重建 |
 | 语义层 / 文档层 | `graphify extract . --backend <gemini\|kimi\|claude\|openai\|deepseek\|ollama>` | **需要 LLM key，本机未配** → 当前只有代码层（`EXTRACTED` 边），没有 `INFERRED` 边 |
@@ -136,18 +144,24 @@ niclane test -c niclane.yaml -url http://members.3322.org/dyndns/getip   # 验�
 且**最新改动里的某个符号**能 `graphify explain "<新符号>"` 退出 0。
 
 ```bash
-python3 -c "import json,subprocess;print(json.load(open('graphify-out/graph.json'))['built_at_commit'])"
+python3 -c "import json;print(json.load(open('graphify-out/graph.json'))['built_at_commit'])"
 git rev-parse HEAD
 ```
 
-> 注意：commit 之后钩子会自动重建，正常情况你不需要手动 `update`；
-> 只有钩子被跳过（rebase/merge 中钩子会主动跳过）或你 `git checkout` 到别的
-> 分支后才需要手动补跑。
+> 注意：
+> - commit 之后钩子会自动重建，正常情况不需要手动 `update`；只有钩子被跳过
+>   （rebase/merge 中钩子会主动跳过）或 `git checkout` 到别的分支后才要补跑。
+> - **文档改动也会触发重建** —— 本文件和两份 README 自己就是图里的节点
+>   （`graphify explain "AGENTS.md"` 实测退出 0），所以改文档提交后 `built_at_commit`
+>   通常会自动跟上。
+> - 唯一会"跟不上的"是**拓扑没变**的提交（比如只改了 `.go` 里的字符串字面量）：
+>   `update` 打印 `No code-graph topology changes detected` 就连元数据一起不写。
+>   要刷新就按上表最后那行，删掉 `graph.json` 从零重建。
 
 ### 3.4 别污染图
 
 - **建图前先写 `.graphifyignore`**（本仓库目前不需要：仓库只有 33 个 `.go`、
-  约 70 个文件，无 vendored/minified 产物，`.codebuddy/` `.zcode/` 已被 `.gitignore`
+  52 个被跟踪文件（`git ls-files | wc -l`），无 vendored/minified 产物，`.codebuddy/` `.zcode/` 已被 `.gitignore`
   排除，graphify 默认尊重 `.gitignore`）。**将来一旦引入大体积生成物/三方 bundle，
   先加 ignore 再重建**；症状是 `god-nodes` 顶上出现单字母函数名。
 - `graphify-out/` 里的 `graph.html` / `GRAPH_REPORT.md` / `memory/` / `reflections/`
@@ -214,7 +228,7 @@ graphify reflect    # → graphify-out/reflections/LESSONS.md
   ```bash
   git log --format='%s' -10 | grep -vE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'
   # 期望：空输出
-  # 实测：最近十条有 1 条不合规（release: v0.4.0 …），全量 27 条有 6 条
+  # 实测：最近十条有 1 条不合规（release: v0.4.0 …），全量 28 条有 6 条
   #       （5 条 release:/v0.x 前缀 + 1 条首提交）—— 只约束新提交，不去改史
   ```
 - **② 不给 AI 署名**（OSS Commit Rules 第 2 步）：改动由 agent 做的，commit 仍然算
@@ -294,57 +308,86 @@ graphify reflect    # → graphify-out/reflections/LESSONS.md
 
 ## 6. 同步状态与泄漏对照（**推送前必读**）
 
-### 6.1 当前状态：本地与线上**不同步**
+### 6.1 当前状态：**已对齐**（实测 2026-10-26）
 
-| | 本地 `main` | 线上 `origin/main` |
+下表是**快照，会随新提交过期** —— 每次动 `main` 前用右列命令重测；
+其中"左列必须是 `0`"是硬判据（落后于线上就不许推，见 §6.3）：
+
+| 项 | 快照（撰写时） | 复测命令 |
 |---|---|---|
-| HEAD | `9c156e6` | `d2c65c1` |
-| 提交数 | 27 | 27 |
-| 共同祖先 | **无（`git merge-base` 失败）** | — |
-| 提交消息 / 作者 / 时间戳 | 逐一对应相同 | 逐一对应相同 |
-| 内容差异 | **8 个文件 / 34 行**，全部是示例与测试夹具里的网卡名和 IP | — |
+| 共同祖先 | `d2c65c1` = `origin/main` → **同源** | `git merge-base origin/main main` |
+| 领先 / 落后 | **`0 2`**（领先的两笔都是本文件） | `git rev-list --left-right --count origin/main...main` |
+| 提交数 | 本地 29 / 线上 27 | `git rev-list --count main` / `… origin/main` |
+| 树差异 | **3 文件**：`AGENTS.md`、`.gitattributes`、`.gitignore` | `git diff --stat origin/main main` |
+| 工作区 | `git status` 空；9 个真实标识已全部消失 | `git status --porcelain` + 下面的枚举脚本 |
 
-即：两条历史是**同一批工作的两份平行重写**，代码逻辑层面完全一致，
-差异只有 §6.2 的脱敏值。`git cherry` 显示本地没有线上缺失的独立工作。
+**§6.2 那 9 个真实值在对齐时随 `git reset --hard origin/main` 一起被换掉了**
+（本地历史被丢弃，见下）。工作区现在只剩**占位与故意夹具**：
+5 个文档占位网卡名（`enx02000000000N`）、3 个 `10.x` 私网示例、
+2 个一眼假的占位 MAC（`config_test.go` 2 处、`skills/niclane/SKILL.md` 1 处）——
+后者在 `origin/main` 里也都存在，按 §4.1 ③ 的 Done-when 属于"留着并能说出理由"。
 
-**结论：线上是脱敏版，本地是原始版。**
-标识本身**不在这份文件里复述**（复述即重新泄漏，OSS 规则③会拦）。现场枚举 + 定性用这条 ——
-判据不是"线上为 0"，而是**"线上列为 0 的才是本地独有的真泄漏"**：
+#### 这次对齐是怎么做的（历史记录，防止下次又长出第二条历史）
+
+对齐前是**同一批工作的两份平行重写**：`main` 与 `origin/main` 无共同祖先、各 27 笔、
+提交消息/作者/时间戳逐一对应，内容只差 8 个文件 / 34 行 —— 全是 §6.2 那类脱敏值差异
+（线上脱敏、本地原始）。`git cherry` 显示本地没有线上缺失的独立工作。
+
+经**人明确批准**（§6.3 要求），2026-10-26 执行：
 
 ```bash
-# 逐值比对：本地命中提交数 vs 线上命中提交数
+git branch -f backup/pre-align main        # ① 先留退路，指向旧平行历史
+git reset --hard origin/main               # ② 本地对齐线上（方向不能反，见 §6.3）
+git cherry-pick f2fc941                    # ③ 把 AGENTS.md 那笔摘回来
+```
+
+- 结果（当时）：`0 1`（只领先摘回来的那一笔），`merge-base == origin/main`，工作区干净。
+- **未 force-push**，线上一个字节都没动。
+- 退路：`backup/pre-align` = `f2fc941`。旧历史的提交对象**仍带真实标识**，它们只能
+  留在本地；确认不再需要后 `git branch -D backup/pre-align` 删掉。
+  （reflog 里也会残留同样一批对象，但 reflog 不进推送内容。）
+
+#### 现在怎么核对"没有回潮 / 线上仍然干净"
+
+真实值不复述进本文件。对**工作区枚举出来的每个值**，看它的 `origin/main` 列 ——
+**判据：该列必须 ≥1**（说明这个值本来就在线上、是故意夹具）；
+**若为 0 而工作区有，就是新漏进来的真泄漏，立刻改掉**：
+
+```bash
 for v in $(grep -rhoE '192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9]+\.[0-9]+|/home/[a-zA-Z0-9_]+/|enx[0-9a-f]{12}' \
              --exclude-dir=.git --exclude-dir=graphify-out --exclude-dir=.codebuddy --exclude=AGENTS.md . | sort -u); do
-  L=$(git log main        -S"$v" --oneline | wc -l)
-  R=$(git log origin/main -S"$v" --oneline | wc -l)
-  printf '%-24s 本地 %2s / 线上 %s%s\n' "$v" "$L" "$R" \
-    "$([ "$R" = 0 ] && [ "$L" != 0 ] && echo '   ← 仅本地有，真泄漏')"
+  printf '%-24s 工作区有值  origin/main 命中 %s 提交  旧本地历史命中 %s 提交\n' "$v" \
+    "$(git log origin/main    -S"$v" --oneline | wc -l)" \
+    "$(git log backup/pre-align -S"$v" --oneline | wc -l 2>/dev/null || echo 'n/a')"
 done
 ```
 
-**本仓库实测结果（2026-10-26）**：
+**本仓库实测（2026-10-26，对齐后）**：
 
-- **9 个真泄漏值 / 45 处 / 8 个文件** —— 4 个私网 IPv4（网关 A、热点上游 B、`bind_ip`
-  示例、第二网关）+ 5 个 MAC 派生网卡名。"线上"列全部为 0，"本地"列 1–5。
-  文件：`README.md`、`README.zh-CN.md`、`config.example.yaml`、
-  `skills/niclane/SKILL.md`、`docs/superpowers/specs/…design.md`、
-  `docs/superpowers/plans/…candidates.md`、`internal/config/config_test.go`、
-  `internal/discover/discover_test.go`（11 处，最集中）。
-- **5 个两边都有的值，不是泄漏差异** —— 上面的循环会把它们一起列出来，但**没有**
-  `←` 标记：3 个 `10.x` 私网示例（分别落在 `config_test.go` 的标准 example upstream、
-  `docs/coexistence.md` 的 TUN 场景、`selector_test.go` 的两处夹具，共 4 处），
-  以及 2 个一眼假的占位 MAC（`config_test.go`、`skills/niclane/SKILL.md`）。
-  它们按规则③的 Done-when 属于"**故意的非敏感夹具**"，且早已在公开线上 —— 留着，
-  但被问到要能说出理由（就是这一句）。字面值以 §6.1 循环的输出为准，**同样不复述进本文件**
-  （复述过一次，规则③第 [4] 条当场就红了）。
-- **`/home/<user>/` 在本仓库的提交历史里 0 命中**，只出现在被 `.gitignore` 排除的
-  `.codebuddy/` 扫描产物里。本文件自己也已改用 `~/` 写法，规则③第 [4] 条实测 **PASS**。
+- 上面的脚本枚举出 **10 个值**，`origin/main` 列**全部 ≥1** → **PASS，没有回潮**。
+  构成：5 个文档占位网卡名 + 3 个 `10.x` 私网示例 + 2 个占位 MAC；
+  `/home/<user>/` 在工作区和提交历史里都是 0 命中（只在被 `.gitignore` 排除的
+  `.codebuddy/` 扫描产物里出现）。
+- **已清除的 9 个值**逐个复核：`git log backup/pre-align -S<值>` → **1–5 提交**，
+  `git log origin/main -S<值>` → **全部 0**。即"当年本地独有的真泄漏只存在于
+  废弃分支，线上从未有过"。值不复述进本文件，现取（实测恰好 9 行）：
+  ```bash
+  git grep -hoE '192\.168\.[0-9]+\.[0-9]+|enx[0-9a-f]{12}' backup/pre-align \
+      -- ':(exclude)AGENTS.md' | sort -u | while read -r v; do
+    [ "$(git log origin/main -S"$v" --oneline | wc -l)" = 0 ] && echo "$v ← 旧历史独有"
+  done
+  ```
+- 分类与替代值见 §6.2：4 个私网 IPv4（网关 A、热点上游 B、`bind_ip` 示例、
+  第二网关）+ 5 个 MAC 派生网卡名，对齐前共 **45 处 / 8 个文件**，
+  最集中的是 `internal/discover/discover_test.go`（11 处）。
 
 ### 6.2 泄漏对照表（写新示例时照这张表填）
 
-真实值不复述，只记「哪一类 → 换成哪个脱敏值 → 在哪些文件」。
+真实值不复述，只记「哪一类 → 换成哪个脱敏值 → 曾经出现在哪」。
+**对齐后这些位置都已是脱敏值**，本表的用途是**防止改回去**（尤其是改 README /
+config.example 时"顺手"填上手边真实网卡名）。
 
-| 泄漏类型（本地残留） | ✅ 应当使用（脱敏） | 出现处 |
+| 泄漏类型（真实值类别，禁止写入） | ✅ 应当使用（脱敏） | 曾经出现处（对齐后已换掉） |
 |---|---|---|
 | 网关 / 上游代理的私网 IPv4（A） | `198.51.100.10` | README×2、SKILL、config.example、spec、plan、`config_test.go`、`discover_test.go` |
 | 热点上游的私网 IPv4（B） | `198.51.100.20` | README×2、SKILL、config.example、`discover_test.go` |
@@ -362,12 +405,18 @@ done
 ### 6.3 推送纪律
 
 - **每次提交前先跑 §4.1 的②③两道筛查**（AI 署名 + 四类隐私）。
-  本仓库之所以出现 §6.1 的双历史，就是因为当初缺这道闸 —— 值被写进提交后
-  只能靠改写历史来清除，而"改史"正是分支保护要禁止的事。闸门必须在 commit 时。
-- **不要把本地历史强推到线上覆盖** —— 那会把真实标识写回 GitHub 公开历史。
-- 要同步，方向应当是"本地对齐线上"（`git fetch` 后以 `origin/main` 为准重建本地），
-  或先把 §6.2 全部脱敏再谈合并。**这是需要人明确决策的动作，agent 不要自行执行。**
+  本仓库长出第二条历史、真实标识被写进提交，根因就是当初缺这道闸 ——
+  值一旦进了提交对象，清除它只能靠改写历史，而"改史"正是分支保护要禁止的事。
+  闸门必须设在 commit 时，线上（GitHub secret push protection）只是兜底。
+- **不要把本地历史强推到线上覆盖** —— 本仓库的旧平行历史里带着真实标识，
+  `push --force` 会把它们写回公开历史。这条**永远禁止**，没有例外。
+- 要同步，方向**只能是"本地对齐线上"**（`git fetch` 后以 `origin/main` 为准重建本地，
+  再把要保留的提交 cherry-pick 回来；2026-10-26 已按此执行过一次，命令见 §6.1）。
+  **仍属需人明确决策的动作，agent 不要自行执行** —— 一旦发现 `main` 与 `origin/main`
+  又不同源了（`git merge-base` 失败），先停下来报告，别自己 reset。
 - 本仓库是 PUBLIC，且当前**没有分支保护**（见 §6.4），所以推送前的自我检查更要靠人。
+- 推送前最后一遍：`git rev-list --left-right --count origin/main...main` 的
+  **左列必须是 0**（不落后），右列只放你打算开 PR 的那几笔。
 
 ### 6.4 已知开源就绪缺口（按 OSS 规则集审计，实测 2026-10-26）
 
@@ -381,10 +430,11 @@ done
 | `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `SECURITY.md` | ❌ 缺 | 同上 + `security-policy-rules.md` |
 | `.github/PULL_REQUEST_TEMPLATE.md` / `CODEOWNERS` / Issue 模板 | ❌ 缺 | `pr-rules.md` / `repo-hygiene-rules.md` |
 | 仓库 metadata | ⚠️ 有描述、MIT；**无 topics**、homepage 空 | `repo-hygiene-rules.md` |
-| 提交信息规范 | ⚠️ 27 条里 6 条不符合 Conventional Commits（5 条 `release:`/`v0.x` 前缀 + 首提交；含**最近**的 `release: v0.4.0`），只约束新提交 | `commit-message-rules.md` |
+| 提交信息规范 | ⚠️ 28 条里 6 条不符合 Conventional Commits（5 条 `release:`/`v0.x` 前缀 + 首提交；含**最近**的 `release: v0.4.0`），只约束新提交 | `commit-message-rules.md` |
 | `CHANGELOG` 标题风格 | ⚠️ 用的是 `## 0.4.0 — 2026-10-22`，非 Keep a Changelog 的 `## [0.4.0] - 2026-10-22` | `release-rules.md`（要么保持本仓库既有风格并在此记录，要么整体迁移一次，别混用） |
 | tag | ✅ 6 个 tag 全是 annotated（远端都有 `^{}` 剥离行） | `release-rules.md` |
-| 线上历史脱敏 | ✅ 已完成；本地工作区未完成（§6.2） | 本项目红线 |
+| 线上历史脱敏 | ✅ 已完成；本地 `main` 亦已对齐线上、工作区无真实值（§6.1）：只剩占位值 + 2 个既有的占位 MAC 夹具 | 本项目红线 |
+| 本地 / 线上同步 | ✅ 同源（`merge-base == origin/main`，`0 2`）；本地领先的 2 笔 = 本文件，待下次修复一起开 PR | `pr-rules.md` + §6.3 |
 
 > 上表是**审计结果，不是待办授权**。改分支保护、改仓库设置、补治理文件
 > 都属于"需人明确提出的独立动作"。

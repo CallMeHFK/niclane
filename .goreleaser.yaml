@@ -47,6 +47,6 @@ changelog:
   sort: asc
   filters:
     exclude:
-      - "^docs:"
-      - "^chore:"
-      - "^test:"
+      # Conventional Commits may carry a scope, so a bare "^chore:" still lets
+      # "chore(release): ..." through and pollutes the release body.
+      - '^(docs|chore|test)(\([^)]*\))?!?:'

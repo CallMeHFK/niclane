@@ -271,9 +271,12 @@ graphify reflect    # → graphify-out/reflections/LESSONS.md
 - **发版**：先改 `CHANGELOG.md` → `git tag -a vX.Y.Z -m "vX.Y.Z"` → 推 tag →
   goreleaser 自动出 5 个平台产物。tag 必须是 annotated（`git ls-remote --tags origin`
   要看到 `^{}` 剥离行），已发布版本永不删除、永不重打，改出新的 patch。
-  goreleaser 的 changelog filter 只排除 `^docs:` / `^chore:` / `^test:` 三类
-  （见 `.goreleaser.yaml`），所以**用户可见的改动用 `feat:`/`fix:`/`refactor:` 等都会进发布说明**；
-  纯文档、杂务、测试改动记得带上 `docs:`/`chore:`/`test:` 前缀，否则会污染 Release 正文。
+  goreleaser 的 changelog filter 排除 `docs` / `chore` / `test` 三类，**带不带 scope 都算**
+  （正则 `^(docs|chore|test)(\([^)]*\))?!?:`，见 `.goreleaser.yaml`）。2026-10-28 之前写的是
+  裸 `^docs:` 三条，`docs(agents):` / `chore(release):` 这种带 scope 的写法匹配不上 ⇒
+  v0.4.1 的正文因此混进了两条杂务提交。所以**用户可见的改动用 `feat:`/`fix:`/`refactor:`
+  等都会进发布说明**；纯文档、杂务、测试改动务必带上 `docs:`/`chore:`/`test:` 前缀（可带
+  scope），否则会污染 Release 正文。
 
 ---
 
@@ -308,18 +311,18 @@ graphify reflect    # → graphify-out/reflections/LESSONS.md
 
 ## 6. 同步状态与泄漏对照（**推送前必读**）
 
-### 6.1 当前状态：**已对齐**（实测 2026-10-26）
+### 6.1 当前状态：**已对齐**（实测 2026-10-28）
 
 下表是**快照，会随新提交过期** —— 每次动 `main` 前用右列命令重测；
 其中"左列必须是 `0`"是硬判据（落后于线上就不许推，见 §6.3）：
 
 | 项 | 快照（撰写时） | 复测命令 |
 |---|---|---|
-| 共同祖先 | `d2c65c1` = `origin/main` → **同源** | `git merge-base origin/main main` |
-| 领先 / 落后 | **`0 2`**（领先的两笔都是本文件） | `git rev-list --left-right --count origin/main...main` |
-| 提交数 | 本地 29 / 线上 27 | `git rev-list --count main` / `… origin/main` |
-| 树差异 | **3 文件**：`AGENTS.md`、`.gitattributes`、`.gitignore` | `git diff --stat origin/main main` |
-| 工作区 | `git status` 空；9 个真实标识已全部消失 | `git status --porcelain` + 下面的枚举脚本 |
+| 共同祖先 | `8fed6f3` = `origin/main` → **同源** | `git merge-base origin/main main` |
+| 领先 / 落后 | **`0 0`** | `git rev-list --left-right --count origin/main...main` |
+| 提交数 | 本地 30 / 线上 30 | `git rev-list --count main` / `… origin/main` |
+| 树差异 | **空**（`main` 与 `origin/main` 完全一致） | `git diff --stat origin/main main` |
+| 工作区 | `git status` 空 | `git status --porcelain` + 下面的枚举脚本 |
 
 **§6.2 那 9 个真实值在对齐时随 `git reset --hard origin/main` 一起被换掉了**
 （本地历史被丢弃，见下）。工作区现在只剩**占位与故意夹具**：
@@ -414,27 +417,28 @@ config.example 时"顺手"填上手边真实网卡名）。
   再把要保留的提交 cherry-pick 回来；2026-10-26 已按此执行过一次，命令见 §6.1）。
   **仍属需人明确决策的动作，agent 不要自行执行** —— 一旦发现 `main` 与 `origin/main`
   又不同源了（`git merge-base` 失败），先停下来报告，别自己 reset。
-- 本仓库是 PUBLIC，且当前**没有分支保护**（见 §6.4），所以推送前的自我检查更要靠人。
+- 本仓库是 PUBLIC。分支保护已开启（`enforce_admins=true`，必需检查见 §6.4），但它**只挡
+  "检查没绿"**，挡不住"真实值已经写进 diff" —— 推送前的自我筛查仍不可省。
 - 推送前最后一遍：`git rev-list --left-right --count origin/main...main` 的
   **左列必须是 0**（不落后），右列只放你打算开 PR 的那几笔。
 
-### 6.4 已知开源就绪缺口（按 OSS 规则集审计，实测 2026-10-26）
+### 6.4 已知开源就绪缺口（按 OSS 规则集审计，实测 2026-10-28）
 
 | 检查项 | 现状 | 依据规则 |
 |---|---|---|
-| 分支保护 | ❌ 未开启（`GET .../branches/main/protection` → 404） | `branch-protection-rules.md` |
-| `enforce_admins` / 禁 force-push | ❌ 不存在 → 任何人可推 `main`、可重写历史 | 同上 |
+| 分支保护 | ✅ 已开启（2026-10-28 实测）：必需检查 `lint` + 三个 `test (<os>)`（`strict: false`）、PR 必须走但 0 个批准即可（`dismiss_stale_reviews: true`）、`required_conversation_resolution: true`；无 ruleset（`GET .../rulesets` → `[]`）。检查没跑完时合并会被明确拒绝（`base branch policy prohibits the merge`） | `branch-protection-rules.md` |
+| `enforce_admins` / 禁 force-push | ✅ `enforce_admins.enabled=true`、`allow_force_pushes=false`、`allow_deletions=false` → admin 也绕不过，`main` 历史不可重写 | 同上 |
 | 合并方式 | ⚠️ squash + merge + rebase **三种全开**；`squash_merge_commit_title=COMMIT_OR_PR_TITLE`、`squash_merge_commit_message=COMMIT_MESSAGES`（会吞掉 PR 正文）、`delete_branch_on_merge=false` | `pr-rules.md` |
 | CI 引导 | ✅ `ci.yml` 在 push/PR 上跑，`permissions: contents: read`，check 名已知 | `repo-hygiene-rules.md` |
 | `README` / `LICENSE` / `CHANGELOG` | ✅ 齐 | `repo-hygiene-rules.md` |
 | `CODE_OF_CONDUCT.md` / `CONTRIBUTING.md` / `SECURITY.md` | ❌ 缺 | 同上 + `security-policy-rules.md` |
 | `.github/PULL_REQUEST_TEMPLATE.md` / `CODEOWNERS` / Issue 模板 | ❌ 缺 | `pr-rules.md` / `repo-hygiene-rules.md` |
 | 仓库 metadata | ⚠️ 有描述、MIT；**无 topics**、homepage 空 | `repo-hygiene-rules.md` |
-| 提交信息规范 | ⚠️ 28 条里 6 条不符合 Conventional Commits（5 条 `release:`/`v0.x` 前缀 + 首提交；含**最近**的 `release: v0.4.0`），只约束新提交 | `commit-message-rules.md` |
-| `CHANGELOG` 标题风格 | ⚠️ 用的是 `## 0.4.0 — 2026-10-22`，非 Keep a Changelog 的 `## [0.4.0] - 2026-10-22` | `release-rules.md`（要么保持本仓库既有风格并在此记录，要么整体迁移一次，别混用） |
-| tag | ✅ 6 个 tag 全是 annotated（远端都有 `^{}` 剥离行） | `release-rules.md` |
+| 提交信息规范 | ⚠️ 30 条里 6 条不符合 Conventional Commits（全是 0.4.0 之前的 `release:`/`vX.Y.Z:` 前缀 + 首提交；最近 10 条里仍有 1 条，即 `release: v0.4.0`），只约束新提交 | `commit-message-rules.md` |
+| `CHANGELOG` 标题风格 | ⚠️ 用的是 `## 0.4.1 — 2026-10-28`，非 Keep a Changelog 的 `## [0.4.1] - 2026-10-28` | `release-rules.md`（要么保持本仓库既有风格并在此记录，要么整体迁移一次，别混用） |
+| tag | ✅ 7 个 tag 全是 annotated（远端都有 `^{}` 剥离行） | `release-rules.md` |
 | 线上历史脱敏 | ✅ 已完成；本地 `main` 亦已对齐线上、工作区无真实值（§6.1）：只剩占位值 + 2 个既有的占位 MAC 夹具 | 本项目红线 |
-| 本地 / 线上同步 | ✅ 同源（`merge-base == origin/main`，`0 2`）；本地领先的 2 笔 = 本文件，待下次修复一起开 PR | `pr-rules.md` + §6.3 |
+| 本地 / 线上同步 | ✅ 同源（`merge-base == origin/main == 8fed6f3`，`0 0`），工作区干净；`v0.4.1` 已发布 | `pr-rules.md` + §6.3 |
 
 > 上表是**审计结果，不是待办授权**。改分支保护、改仓库设置、补治理文件
 > 都属于"需人明确提出的独立动作"。

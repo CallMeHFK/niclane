@@ -51,6 +51,35 @@ func TestParseNmcliGateway(t *testing.T) {
 	}
 }
 
+func TestParseNmcliDhcpRouters(t *testing.T) {
+	// Terse `nmcli -t -f DHCP4.OPTION device show <if>` output for a link that
+	// holds a DHCP lease but installs no default route (ipv4.never-default=yes):
+	// IP4.GATEWAY is empty there, yet the lease still carries the gateway.
+	lease := `DHCP4.OPTION[5]:domain_name_servers = 198.51.100.53
+DHCP4.OPTION[8]:ip_address = 198.51.100.86
+DHCP4.OPTION[22]:requested_routers = 1
+DHCP4.OPTION[27]:routers = 198.51.100.10
+DHCP4.OPTION[28]:subnet_mask = 255.255.255.0
+`
+	ip, ok := parseNmcliDhcpRouters(lease)
+	if !ok || ip.String() != "198.51.100.10" {
+		t.Fatalf("dhcp routers = %v %v, want 198.51.100.10", ip, ok)
+	}
+
+	// requested_routers is a different option and must not be mistaken for it.
+	if _, ok := parseNmcliDhcpRouters("DHCP4.OPTION[22]:requested_routers = 1\n"); ok {
+		t.Fatal("requested_routers must not be treated as the gateway")
+	}
+	// A link with no DHCP lease at all.
+	if _, ok := parseNmcliDhcpRouters(""); ok {
+		t.Fatal("empty nmcli output must yield no gateway")
+	}
+	// DHCP option 3 may list several routers; the first is the default gateway.
+	if ip, ok := parseNmcliDhcpRouters("DHCP4.OPTION[27]:routers = 198.51.100.10 198.51.100.11\n"); !ok || ip.String() != "198.51.100.10" {
+		t.Fatalf("multi-router lease = %v %v, want 198.51.100.10", ip, ok)
+	}
+}
+
 func TestMatchInterfaceName(t *testing.T) {
 	cases := []struct {
 		name      string

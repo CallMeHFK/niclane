@@ -105,31 +105,3 @@ func gatewayFromDhcpLease(ctx context.Context, ifName string) (net.IP, bool) {
 	}
 	return parseNmcliDhcpRouters(string(out))
 }
-
-// parseNmcliDhcpRouters reads DHCP option 3 (routers) out of
-// `nmcli -t -f DHCP4.OPTION device show <if>` output, e.g.
-//
-//	DHCP4.OPTION[27]:routers = 198.51.100.10
-func parseNmcliDhcpRouters(out string) (net.IP, bool) {
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "DHCP4.OPTION[") {
-			continue
-		}
-		_, rest, ok := strings.Cut(line, "]:")
-		if !ok {
-			continue
-		}
-		key, val, ok := strings.Cut(rest, "=")
-		if !ok || strings.TrimSpace(key) != "routers" {
-			continue
-		}
-		// Option 3 may list several routers; the first is the default gateway.
-		for _, f := range strings.Fields(val) {
-			if ip := net.ParseIP(f); ip != nil {
-				return ip, true
-			}
-		}
-	}
-	return nil, false
-}

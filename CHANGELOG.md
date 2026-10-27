@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — 2026-10-28
+
+- **Discovery on links without a default route**: a link configured with
+  `ipv4.never-default=yes` installs no default route, and NetworkManager then
+  reports an empty `IP4.GATEWAY`, so all three gateway sources missed it;
+  discovery skipped the link and its lane failed closed although the upstream
+  proxy was reachable. `gatewayFor` now falls back to DHCP option 3 (routers)
+  read through `nmcli`, which survives that configuration. Links that do
+  publish a default route are unaffected — the new source runs last.
+
 ## 0.4.0 — 2026-10-22
 
 - **Candidate lanes (automatic failover)**: a lane can hold an ordered set of

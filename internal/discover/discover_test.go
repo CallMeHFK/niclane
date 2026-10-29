@@ -8,7 +8,7 @@ import (
 const procRouteFixture = `Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
 enx020000000005	00000000	016433C6	0003	0	0	100	00000000	0	0	0
 enx020000000004	00000000	0A6433C6	0003	0	0	102	00000000	0	0	0
-wlp130s0	0000000A	FEED9F0A	0003	0	0	600	000000FF	0	0	0
+wlan0	0000000A	FEED9F0A	0003	0	0	600	000000FF	0	0	0
 `
 
 func TestParseProcRoute(t *testing.T) {
@@ -16,7 +16,7 @@ func TestParseProcRoute(t *testing.T) {
 	if !ok || ip.String() != "198.51.100.10" {
 		t.Fatalf("gateway = %v %v, want 198.51.100.10", ip, ok)
 	}
-	if _, ok := parseProcRoute(strings.NewReader(procRouteFixture), "wlp130s0"); ok {
+	if _, ok := parseProcRoute(strings.NewReader(procRouteFixture), "wlan0"); ok {
 		t.Fatal("a non-default route must not be treated as a gateway")
 	}
 	if _, ok := parseProcRoute(strings.NewReader(procRouteFixture), "missing0"); ok {
@@ -92,7 +92,7 @@ func TestMatchInterfaceName(t *testing.T) {
 		{"docker0", false, []string{"device"}, false},
 		{"docker0", false, []string{"any"}, true},
 		{"enx1", false, []string{"enx*"}, true},
-		{"wlp130s0", true, []string{"enx*"}, false},
+		{"wlan0", true, []string{"enx*"}, false},
 	}
 	for _, c := range cases {
 		if got := matchInterfaceName(c.name, c.hasDevice, c.spec); got != c.want {

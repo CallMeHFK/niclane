@@ -97,15 +97,14 @@ niclane test -c niclane.yaml -url http://members.3322.org/dyndns/getip   # 验�
 
 本仓库已初始化代码知识图谱（CLI：`graphify 0.9.95`，位于 `~/.local/bin/graphify`）。
 
-- **当前状态**：图的规模与 `built_at_commit` **用命令读，别信本文件里的数字**
-  （社区数在两次重建间会波动 —— 本仓库同一份代码实测出过 29 和 23 个社区，
-  所以这里不写死）：
+- **当前状态**：图的规模与 `built_at_commit` **用命令读，本文件不记数字**
+  （写死过一次，下一次重建就对不上；社区数在两次重建间来回跳 —— 本仓库同一份
+  代码实测出过 22 / 23 / 24 / 29，所以任何一个具体值都是噪声）：
   ```bash
   python3 -c "import json;d=json.load(open('graphify-out/graph.json'));print(len(d['nodes']),'nodes /',len(d['links']),'links /',len({n['community'] for n in d['nodes']}),'communities |',d['built_at_commit'])"
   git rev-parse HEAD        # 两个 SHA 必须相等，见 §3.3 的 Done when
   ```
-  撰写时（2026-10-29，`fe71b67`）：**622 节点 / 1699 边 / 24 社区**，
-  `built_at_commit` == `HEAD`，无垃圾节点。
+  判据是**两个 SHA 相等且无垃圾节点**，不是节点数等于某个值。
 - **钩子已装**：`post-commit` / `post-checkout` / `post-merge` / `post-rewrite`
   + `graph.json` 的 git merge driver（`graphify hook status` 复核，四项 + driver 全 installed）。
   由 `graphify hook install` 一并创建的 `.gitattributes`（`graphify-out/graph.json merge=graphify`）
@@ -239,10 +238,12 @@ graphify reflect    # → graphify-out/reflections/LESSONS.md
   type 只能取 `feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`，
   subject 祈使句、无句号、≤72 字符；body 每行 72 列、只解释 *why*。
   ```bash
-  git log --format='%s' -10 | grep -vE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'
+  # 你自己的提交（唯一有意义的检查对象）
+  git log --format='%s' -1 | grep -vE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\(.+\))?!?: .+'
   # 期望：空输出
-  # 实测（2026-10-29，31 条）：最近十条有 1 条不合规（release: v0.4.0 …），
-  #       全量 6 条（5 条 release:/v0.x 前缀 + 1 条首提交）—— 只约束新提交，不改史
+  # 历史遗留不设阈值：release:/vX.Y.Z: 前缀那批 + 首提交从来不合规，
+  #   而且**不改史**（分支保护禁改写）。所以别用"全量 grep 为空"当门禁，
+  #   那会永远红；门禁只看本次提交。
   ```
 - **② 不给 AI 署名**（OSS Commit Rules 第 2 步）：改动由 agent 做的，commit 仍然算
   指挥它的那个人。**禁止**出现 `Co-Authored-By:` 指向 AI/工具的 trailer、
@@ -445,16 +446,16 @@ gh release create vX.Y.Z --verify-tag --title "vX.Y.Z" --notes-file /tmp/release
 ### 6.1 当前状态：**已对齐**（实测 2026-10-29）
 
 下表是**快照，会随新提交过期** —— 每次动 `main` 前用右列命令重测；
-其中"左列必须是 `0`"是硬判据（落后于线上就不许推，见 §6.3）：
+其中"左列必须是 `0`"是硬判据（落后于线上就不许推，见 §6.3）。
+**SHA 与计数不写死在表里**（写死过一次，合并自己这一笔就过期了），只写判据：
 
-| 项 | 快照（撰写时） | 复测命令 |
+| 项 | 判据 | 复测命令 |
 |---|---|---|
-| 共同祖先 | `fe71b67` = `origin/main` → **同源** | `git merge-base origin/main main` |
-| 领先 / 落后 | **`0 0`** | `git rev-list --left-right --count origin/main...main` |
-| 提交数 | 本地 31 / 线上 31 | `git rev-list --count main` / `… origin/main` |
-| 跟踪文件 | 52 个（其中 33 个 `.go`） | `git ls-files \| wc -l` |
-| 树差异 | **空**（`main` 与 `origin/main` 完全一致） | `git diff --stat origin/main main` |
-| 工作区 | 快照时刻 `git status` 空 | `git status --porcelain` + 下面的枚举脚本 |
+| 共同祖先 | `merge-base` 返回一个 SHA，且**等于** `origin/main` → 同源 | `git merge-base origin/main main` |
+| 领先 / 落后 | **左列必须 `0`**（不落后）；右列只放打算开 PR 的那几笔 | `git rev-list --left-right --count origin/main...main` |
+| 树差异 | 本地 `main` 与 `origin/main` 无差异 | `git diff --stat origin/main main` |
+| 工作区 | 空 | `git status --porcelain` + 下面的枚举脚本 |
+| 提交数 / 跟踪文件 | 仅供参考，不设阈值 | `git rev-list --count main` / `git ls-files \| wc -l` |
 
 **§6.2 那 9 个真实值在对齐时随 `git reset --hard origin/main` 一起被换掉了**
 （本地历史被丢弃，见下）。工作区现在只剩**占位与故意夹具**，逐值复核见本节末尾
@@ -495,7 +496,7 @@ for v in $(grep -rhoE '192\.168\.[0-9]+\.[0-9]+|10\.[0-9]+\.[0-9]+\.[0-9]+|172\.
 done
 ```
 
-**本仓库实测（2026-10-29，`fe71b67`）**：
+**本仓库实测（2026-10-29）**：
 
 - 上面的脚本枚举出 **10 个值**，`origin/main` 列**全部 ≥1** → **PASS，没有回潮**。
   构成：**7 个占位网卡名**（`enx02000000000N` ×5、`enx111111111111`、
@@ -568,17 +569,17 @@ config.example 时"顺手"填上手边真实网卡名）。
 | 密文扫描 | ✅ `secret_scanning=enabled`、`secret_scanning_push_protection=enabled` | `security-policy-rules.md` |
 | tag | ✅ 7 个（v0.1.0–v0.4.1）全是 annotated，远端都有 `^{}` 剥离行 | `release-rules.md` |
 | 线上历史脱敏 | ✅ 已完成；本地 `main` 亦已对齐（§6.1），工作区只剩 §6.2 的占位夹具 | 本项目红线 |
-| 本地 / 线上同步 | ✅ 同源（`merge-base == origin/main == fe71b67`，`0 0`），31 笔对齐 | `pr-rules.md` + §6.3 |
+| 本地 / 线上同步 | ✅ 同源（`merge-base == origin/main`，`0 0`），工作区干净 | `pr-rules.md` + §6.3 |
 | CI 引导 | ✅ `ci.yml` 在 push/PR 上跑，`permissions: contents: read`，check 名已知 | `repo-hygiene-rules.md` |
 | `README` / `LICENSE` / `CHANGELOG` | ✅ 齐 | `repo-hygiene-rules.md` |
-| **发布正文取源** | ❌ **`v0.4.1` 的正文是 goreleaser 生成的 commit 列表**（`## Changelog` + 4 条 `* <sha> <subject>`，含 `chore(release)` 与 `docs(agents)`），不是 `CHANGELOG.md` 的条目 —— §4.4 的 "changelog-first" 尚未真正生效。该 release 早于过滤器修复（`fe71b67`），故 docs/chore 穿透 | `release-rules.md` |
+| **发布正文取源** | ❌ **`v0.4.1` 的正文是 goreleaser 生成的 commit 列表**（`## Changelog` + 4 条 `* <sha> <subject>`，含 `chore(release)` 与 `docs(agents)`），不是 `CHANGELOG.md` 的条目 —— §4.4 的 "changelog-first" 尚未真正生效。该 release 早于过滤器修复（§4.4 里那条 `^(docs|chore|test)…` 的提交），故 docs/chore 穿透 | `release-rules.md` |
 | **合并方式** | ⚠️ squash + merge + rebase **三种全开**；`squash_merge_commit_title=COMMIT_OR_PR_TITLE`、`squash_merge_commit_message=COMMIT_MESSAGES`（会吞掉 PR 正文）、`delete_branch_on_merge=false`、`allow_auto_merge=false` | `pr-rules.md` 第 2–3 步 |
 | **workflow action 固定** | ⚠️ 1 个第三方 ref 未钉 SHA：`goreleaser/goreleaser-action@v6`（`actions/checkout@v4`、`actions/setup-go@v5` 为 first-party，不在本条范围内） | `security-policy-rules.md` 第 5 步 |
 | **私有漏洞报告** | ❌ `private-vulnerability-reporting=false`；`dependabot_security_updates=disabled`；`secret_scanning_non_provider_patterns` / `validity_checks=disabled` | `security-policy-rules.md` |
 | 治理文件 | ❌ 缺 `SECURITY.md`、`CONTRIBUTING.md`、`CODE_OF_CONDUCT.md` | `repo-hygiene-rules.md` + `security-policy-rules.md` |
 | PR / Issue 模板 | ❌ 缺 `.github/PULL_REQUEST_TEMPLATE.md`、`CODEOWNERS`、`ISSUE_TEMPLATE/`；`.github/` 下只有 `workflows/` | `pr-rules.md` / `repo-hygiene-rules.md` |
 | 仓库 metadata | ⚠️ 有描述、MIT；**无 topics**、`homepage=null`；`has_wiki=true` 但 `niclane.wiki.git` 不存在（无内容的空壳） | `repo-hygiene-rules.md` |
-| 提交信息规范 | ⚠️ 31 条里 6 条不符合 Conventional Commits（5 条 `release:` / `vX.Y.Z:` 前缀 + 首提交；最近 10 条里仍有 1 条 `release: v0.4.0 …`）。只约束新提交，不改史 | `commit-message-rules.md` |
+| 提交信息规范 | ⚠️ 历史里有一批不合规（`release:` / `vX.Y.Z:` 前缀的 5 笔 + 首提交）。**只约束新提交，不改史**；当前合规率用 §4.1 顶部那条命令现测 | `commit-message-rules.md` |
 | `CHANGELOG` 标题风格 | ⚠️ 用的是 `## 0.4.1 — 2026-10-28`，非 Keep a Changelog 的 `## [0.4.1] - 2026-10-28` | `release-rules.md`（要么保持既有风格并在此记录，要么整体迁移一次，别混用） |
 
 > 上表是**审计结果，不是待办授权**。改分支保护、改仓库设置、补治理文件、

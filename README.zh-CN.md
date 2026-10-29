@@ -115,7 +115,10 @@ DHCP 网关**，只在这个网关上 TCP 探测配置的代理端口：
   默认 `[10808, 10809, 7890, 7891]`）加车道可选的 `discover.ports`——按你的
   设备代理端口自行增减。
 - 网关查找顺序：`via:` 覆盖 → `/proc/net/route` → systemd-networkd 租约 →
-  `nmcli`。发现仅支持 Linux；其他平台上 `discover:` 车道只保留静态候选。
+  NetworkManager 的 `IP4.GATEWAY` → NetworkManager 的 DHCP 租约（option 3）。
+  最后一个来源专治 `ipv4.never-default=yes`：这种链路不发布默认路由，
+  NM 因此报告空网关，没有这条回退就发现不到它。发现仅支持 Linux；
+  其他平台上 `discover:` 车道只保留静态候选。
 - 发现的候选以 priority `100` 加入，低于静态候选默认的 `1000`，显式配置的
   设备优先。设备代理端口不再应答时，对应候选自动移除。
 - `niclane discover -c niclane.yaml` 打印当前扫描结果：网卡、上游、来源、
@@ -345,8 +348,9 @@ WantedBy=multi-user.target
 ## Agent 技能
 
 niclane 自带一份 [Agent Skill](skills/niclane/SKILL.md)，教会编码 Agent 完整
-操作闭环（doctor → 配置 → serve → 以 `test` 为验收门 → 热重载）以及需要如实
-披露的失败模式。安装后 Agent 即可自主驱动 niclane：
+操作闭环（doctor → 配置 → 以 `test` 为验收门 → serve → 热重载）、如何证明确实
+是哪张网卡承载了流量，以及需要如实披露的失败模式。安装后 Agent 即可自主驱动
+niclane：
 
 已克隆仓库直接拷贝，或免克隆直接从 GitHub 拉：
 

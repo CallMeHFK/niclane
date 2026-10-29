@@ -135,8 +135,12 @@ TCP-checks the configured proxy ports on that gateway only:
   from `discovery.ports` (global default `[10808, 10809, 7890, 7891]`) plus
   the lane's optional `discover.ports` — extend them for your device's proxy.
 - Gateway lookup order: `via:` override → `/proc/net/route` →
-  systemd-networkd lease → `nmcli`. Discovery is Linux-only; on other
-  platforms a `discover:` lane simply keeps its static candidates.
+  systemd-networkd lease → NetworkManager's `IP4.GATEWAY` → NetworkManager's
+  DHCP lease (option 3). The last source is what keeps a phone link
+  discoverable under `ipv4.never-default=yes`, where the link publishes no
+  default route and NM consequently reports an empty gateway. Discovery is
+  Linux-only; on other platforms a `discover:` lane simply keeps its static
+  candidates.
 - Discovered candidates enter at priority `100`, below static candidates'
   default `1000`, so an explicitly configured device wins. They disappear
   automatically when the device's proxy port stops answering.
@@ -384,9 +388,10 @@ WantedBy=multi-user.target
 ## Agent skill
 
 niclane ships an [Agent Skill](skills/niclane/SKILL.md) that teaches coding
-agents the full operate loop (doctor → config → serve → `test` as the
-acceptance gate → hot-reload) plus the failure modes worth disclosing. Install
-it so your agent can drive niclane unprompted:
+agents the full operate loop (doctor → config → `test` as the acceptance gate
+→ serve → hot-reload), how to prove which NIC actually carried the bytes, plus
+the failure modes worth disclosing. Install it so your agent can drive niclane
+unprompted:
 
 From a clone, or without one straight from the repo:
 

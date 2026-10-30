@@ -479,7 +479,7 @@ func (l *Lane) proxyDial(ctx context.Context, network, address string) (net.Conn
 	}
 	switch l.upURL.Scheme {
 	case "socks5":
-		err = socks5ClientHandshake(conn, address, l.upURL.User)
+		err = socks5ClientHandshake(ctx, conn, address, l.upURL.User)
 	case "http":
 		err = httpConnectHandshake(ctx, conn, address, l.upURL.User)
 	default:

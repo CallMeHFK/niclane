@@ -12,11 +12,47 @@ import (
 	"time"
 )
 
+// upstreamHandshakeTimeout bounds an upstream handshake when the caller
+// supplies no tighter deadline.
+const upstreamHandshakeTimeout = 15 * time.Second
+
+// handshakeDeadline bounds an upstream handshake by the caller's context.
+//
+// The context is the budget: a health probe deliberately runs candidates under
+// a short deadline, so a proxy that accepts TCP and then stalls must not hold
+// the connection for the handshake default. ctx is also watched, so a
+// cancellation without a deadline still unblocks a pending read.
+//
+// The returned stop restores the connection for data transfer and must be
+// called once the handshake finishes.
+func handshakeDeadline(ctx context.Context, conn net.Conn) (stop func()) {
+	deadline := time.Now().Add(upstreamHandshakeTimeout)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	conn.SetDeadline(deadline)
+
+	finished := make(chan struct{})
+	watcherDone := make(chan struct{})
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-ctx.Done():
+			conn.SetDeadline(time.Now())
+		case <-finished:
+		}
+	}()
+	return func() {
+		close(finished)
+		<-watcherDone
+		conn.SetDeadline(time.Time{})
+	}
+}
+
 // socks5ClientHandshake performs the client side of the SOCKS5 handshake on
 // conn, requesting a CONNECT to target (host:port, host may be a domain).
-func socks5ClientHandshake(conn net.Conn, target string, userinfo *url.Userinfo) error {
-	conn.SetDeadline(time.Now().Add(15 * time.Second))
-	defer conn.SetDeadline(time.Time{})
+func socks5ClientHandshake(ctx context.Context, conn net.Conn, target string, userinfo *url.Userinfo) error {
+	defer handshakeDeadline(ctx, conn)()
 
 	methods := []byte{0x00}
 	if userinfo != nil {
@@ -140,8 +176,7 @@ func expectUnamePassOK(conn net.Conn) error {
 
 // httpConnectHandshake performs an HTTP CONNECT to target through conn.
 func httpConnectHandshake(ctx context.Context, conn net.Conn, target string, userinfo *url.Userinfo) error {
-	conn.SetDeadline(time.Now().Add(15 * time.Second))
-	defer conn.SetDeadline(time.Time{})
+	defer handshakeDeadline(ctx, conn)()
 
 	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: niclane\r\n", target, target)
 	if userinfo != nil {
